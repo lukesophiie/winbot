@@ -59,9 +59,28 @@ def _make_broker() -> AlpacaBroker:
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _agent, _agent_task, _agent_running
     db.init_db()
     logger.info("WinBot backend ready")
+
+    # Auto-restart agent if it was running before a container restart
+    if db.get_setting("agent_autostart") == "true":
+        try:
+            broker = _make_broker()
+            if broker.is_connected():
+                _agent = TradingAgent(broker=broker, broadcast=broadcast)
+                _agent_task = asyncio.create_task(_agent.run())
+                _agent_running = True
+                logger.info("Agent auto-restarted from persisted state")
+            else:
+                db.set_setting("agent_autostart", "false")
+                logger.warning("Auto-restart skipped: broker not connected")
+        except Exception as e:
+            logger.error(f"Auto-restart failed: {e}")
+            db.set_setting("agent_autostart", "false")
+
     yield
+
     if _agent:
         _agent.stop()
     logger.info("WinBot backend shutdown")
@@ -289,6 +308,7 @@ async def start_agent():
     _agent = TradingAgent(broker=broker, broadcast=broadcast)
     _agent_task = asyncio.create_task(_agent.run())
     _agent_running = True
+    db.set_setting("agent_autostart", "true")   # persist so container restart resumes it
 
     logger.info("Agent started via API")
     return {"status": "started"}
@@ -313,6 +333,7 @@ async def stop_agent():
     _agent_running = False
     _agent = None
     _agent_task = None
+    db.set_setting("agent_autostart", "false")  # don't restart on next boot
 
     logger.info("Agent stopped via API")
     return {"status": "stopped"}
@@ -427,34 +448,6 @@ async def get_forecast(ticker: str):
             "watchlist_size":     len(json.loads(db.get_setting("watchlist") or "[]")),
         },
     }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Debug endpoint (temporary — remove after diagnosing data issues)
-# ══════════════════════════════════════════════════════════════════════════════
-@app.get("/api/debug/data/{ticker}")
-async def debug_data(ticker: str):
-    import traceback
-    from data import _alpaca_keys, _fetch_alpaca, _fetch_yfinance
-    result = {"ticker": ticker, "alpaca": {}, "yfinance": {}}
-
-    key, secret = _alpaca_keys()
-    result["has_alpaca_keys"] = bool(key and secret)
-    result["key_prefix"] = key[:6] + "…" if key else None
-
-    try:
-        df = _fetch_alpaca(ticker, "5d", "1h")
-        result["alpaca"] = {"ok": df is not None and not df.empty, "rows": len(df) if df is not None else 0}
-    except Exception as e:
-        result["alpaca"] = {"ok": False, "error": str(e), "trace": traceback.format_exc()[-500:]}
-
-    try:
-        df2 = _fetch_yfinance(ticker, "5d", "1h")
-        result["yfinance"] = {"ok": not df2.empty, "rows": len(df2)}
-    except Exception as e:
-        result["yfinance"] = {"ok": False, "error": str(e)}
-
-    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════

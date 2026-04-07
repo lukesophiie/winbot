@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 import anthropic
+import pandas as pd
 
 import database as db
 from data import fetch_ohlcv
@@ -116,9 +117,17 @@ sizing   : small=25%, medium=50%, large=100% of max position size"""
     async def analyse(self, ticker: str) -> Optional[dict]:
         logger.info(f"[agent] Analysing {ticker} …")
         try:
-            df = fetch_ohlcv(ticker, period="60d", interval="1h")
+            # Try progressively shorter periods until we have enough candles.
+            # Alpaca's free IEX feed has limited historical depth.
+            df = pd.DataFrame()
+            for period in ("60d", "30d", "14d", "7d"):
+                df = fetch_ohlcv(ticker, period=period, interval="1h")
+                if not df.empty and len(df) >= 52:
+                    break
+                logger.warning(f"[agent] {ticker}: only {len(df)} candles for period={period}, trying shorter")
+
             if df.empty or len(df) < 52:
-                logger.warning(f"[agent] Insufficient data for {ticker} ({len(df)} candles)")
+                logger.warning(f"[agent] Insufficient data for {ticker} ({len(df)} candles) — skipping")
                 return None
 
             ind = calculate_all_indicators(df)

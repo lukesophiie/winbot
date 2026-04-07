@@ -4,6 +4,14 @@ import { Plus, Trash2, RefreshCw, TrendingUp } from 'lucide-react'
 import TickerChart from './TickerChart.jsx'
 
 const POPULAR = ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'AMZN', 'GOOGL', 'META', 'BTC/USD', 'ETH/USD', 'SPY', 'QQQ']
+const LS_KEY  = 'winbot_watchlist'
+
+function saveLocal(wl) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(wl)) } catch {}
+}
+function loadLocal() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]') } catch { return [] }
+}
 
 export default function Watchlist({ toast, trades = [], reasoning = [] }) {
   const [watchlist, setWatchlist]   = useState([])
@@ -11,14 +19,37 @@ export default function Watchlist({ toast, trades = [], reasoning = [] }) {
   const [loading, setLoading]       = useState(false)
   const [selected, setSelected]     = useState(null)
 
+  const applyWatchlist = (wl, selectFirst = false) => {
+    setWatchlist(wl)
+    saveLocal(wl)
+    if (selectFirst && !selected && wl.length > 0) setSelected(wl[0])
+  }
+
   const fetchWatchlist = async () => {
     try {
       const { data } = await axios.get('/api/watchlist')
-      const wl = data.watchlist || []
-      setWatchlist(wl)
-      if (!selected && wl.length > 0) setSelected(wl[0])
+      let wl = data.watchlist || []
+
+      // If backend returned the bare defaults (DB was wiped), restore from localStorage
+      const cached = loadLocal()
+      const isDefault = wl.length <= 3 && wl.every(t => ['AAPL','TSLA','NVDA'].includes(t))
+      if (isDefault && cached.length > 3) {
+        // Silently push cached tickers back to the backend
+        for (const t of cached) {
+          if (!wl.includes(t)) {
+            try { await axios.post('/api/watchlist', { ticker: t }) } catch {}
+          }
+        }
+        wl = cached
+        toast?.('Watchlist restored from your browser cache', 'info')
+      }
+
+      applyWatchlist(wl, true)
     } catch {
-      toast?.('Failed to load watchlist', 'error')
+      // Backend unreachable — still show from localStorage
+      const cached = loadLocal()
+      if (cached.length) applyWatchlist(cached, true)
+      else toast?.('Failed to load watchlist', 'error')
     }
   }
 
@@ -30,7 +61,8 @@ export default function Watchlist({ toast, trades = [], reasoning = [] }) {
     setLoading(true)
     try {
       const { data } = await axios.post('/api/watchlist', { ticker: t })
-      setWatchlist(data.watchlist || [])
+      const wl = data.watchlist || []
+      applyWatchlist(wl)
       setInput('')
       setSelected(t)
       toast?.(`Added ${t} to watchlist`, 'success')
@@ -45,7 +77,7 @@ export default function Watchlist({ toast, trades = [], reasoning = [] }) {
     try {
       const { data } = await axios.delete(`/api/watchlist/${encodeURIComponent(ticker)}`)
       const wl = data.watchlist || []
-      setWatchlist(wl)
+      applyWatchlist(wl)
       if (selected === ticker) setSelected(wl[0] || null)
       toast?.(`Removed ${ticker}`, 'info')
     } catch {

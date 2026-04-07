@@ -45,9 +45,11 @@ class TradingAgent:
         max_trades = int(db.get_setting("max_open_trades") or 5)
         exposure_pct = (len(positions) / max(max_trades, 1)) * 100
 
+        is_crypto = "/" in ticker
         if position:
+            side_label = position['side'].upper()  # LONG or SHORT
             pos_info = (
-                f"OPEN {position['side'].upper()} position: "
+                f"OPEN {side_label} position: "
                 f"{position['quantity']:.4f} units @ avg ${position['avg_entry_price']:.4f} | "
                 f"Unrealised P&L: ${position['unrealized_pl']:.2f} "
                 f"({position['unrealized_plpc']:.2f}%)"
@@ -61,6 +63,7 @@ class TradingAgent:
             for i, c in enumerate(pa)
         )
 
+        no_short_note = " (crypto cannot be shorted on Alpaca)" if is_crypto else ""
         return f"""You are WinBot, an algorithmic trading AI. Analyse the data below and return a trade decision.
 
 ═══ MARKET SNAPSHOT ═══
@@ -97,20 +100,24 @@ Max Position    : {db.get_setting('max_position_size_pct')}% of portfolio
 Min Confidence  : {db.get_setting('min_confidence')}
 
 ═══ TRADING RULES ═══
-- RSI < 30 → oversold (buy signal); RSI > 70 → overbought (sell signal)
-- Price above both EMAs = bullish; below both EMAs = bearish
+- RSI < 30 → oversold → BUY or COVER signal
+- RSI > 70 → overbought → SELL or SHORT signal
+- Price above both EMAs = bullish bias; below both EMAs = bearish bias
 - MACD histogram crossing zero from below = bullish; from above = bearish
 - High volume (ratio > 1.5) confirms trend strength
-- Only BUY if not already long in this ticker
-- Only SELL if you currently hold a long position
-- Use HOLD when signals are conflicting or insufficient
+
+═══ VALID ACTIONS BASED ON POSITION ═══
+- BUY   : Enter LONG — only valid when you have NO position or a SHORT position to close
+- SELL  : Exit LONG  — only valid when you hold a LONG position
+- SHORT : Enter SHORT (profit when price falls) — only valid when NO position exists AND this is NOT crypto{no_short_note}
+- COVER : Exit SHORT — only valid when you hold a SHORT position
+- HOLD  : Do nothing — use when signals are mixed, weak, or no valid action applies
 
 Return ONLY a JSON object — no markdown, no explanation outside the JSON:
-{{"action": "BUY|SELL|HOLD", "confidence": 0.0-1.0, "sizing": "small|medium|large", "reasoning": "2-3 sentences citing specific indicator values"}}
+{{"action": "BUY|SELL|SHORT|COVER|HOLD", "confidence": 0.0-1.0, "sizing": "small|medium|large", "reasoning": "2-3 sentences citing specific indicator values and why this direction"}}
 
-action   : BUY (enter long), SELL (exit long), HOLD (do nothing)
-confidence: probability this trade succeeds (0.0–1.0)
-sizing   : small=25%, medium=50%, large=100% of max position size"""
+confidence: your probability estimate this trade is profitable (0.0–1.0). Must be ≥ 0.70 to execute.
+sizing    : small=25%, medium=50%, large=100% of max position size — scale up for stronger signals"""
 
     # ── Analysis ──────────────────────────────────────────────────────────────
 
@@ -235,10 +242,14 @@ sizing   : small=25%, medium=50%, large=100% of max position size"""
             logger.error(f"[agent] Zero quantity for {ticker}")
             return False
 
-        if action in ("SELL", "SHORT") and position:
-            qty = abs(position["quantity"])
+        if action == "SELL" and position:
+            qty = abs(position["quantity"])   # sell entire long position
+        elif action == "COVER" and position:
+            qty = abs(position["quantity"])   # buy back entire short position
+        elif action == "SHORT":
+            pass                              # sell qty shares short (no existing position)
 
-        order_side = "buy" if action in ("BUY", "LONG") else "sell"
+        order_side = "buy" if action in ("BUY", "LONG", "COVER") else "sell"
         order = self.broker.place_market_order(ticker, order_side, qty)
 
         if order:

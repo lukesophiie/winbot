@@ -79,7 +79,8 @@ def _fetch_alpaca(ticker: str, period: str, interval: str) -> pd.DataFrame | Non
         from alpaca.data.historical import CryptoHistoricalDataClient
         from alpaca.data.requests   import CryptoBarsRequest
         client = CryptoHistoricalDataClient(key, secret)
-        req    = CryptoBarsRequest(symbol_or_symbols=clean, timeframe=tf, start=start, end=end)
+        # Alpaca crypto API requires the slash format: BTC/USD not BTCUSD
+        req    = CryptoBarsRequest(symbol_or_symbols=ticker, timeframe=tf, start=start, end=end)
         bars   = client.get_crypto_bars(req)
     else:
         from alpaca.data.historical import StockHistoricalDataClient
@@ -171,10 +172,10 @@ def fetch_current_price(ticker: str) -> float:
                 from alpaca.data.historical import CryptoHistoricalDataClient
                 from alpaca.data.requests   import LatestCryptoBarRequest
                 client = CryptoHistoricalDataClient(key, secret)
-                req    = LatestCryptoBarRequest(symbol_or_symbols=clean)
+                req    = LatestCryptoBarRequest(symbol_or_symbols=ticker)  # keep BTC/USD format
                 bar    = client.get_crypto_latest_bar(req)
-                if bar and clean in bar:
-                    return round(float(bar[clean].close), 4)
+                if bar and ticker in bar:
+                    return round(float(bar[ticker].close), 4)
             else:
                 from alpaca.data.historical import StockHistoricalDataClient
                 from alpaca.data.requests   import LatestStockBarRequest

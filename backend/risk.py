@@ -44,22 +44,44 @@ class RiskManager:
                 if loss_pct >= self.daily_loss_limit_pct:
                     return False, f"Daily loss limit hit ({loss_pct:.2f}% >= {self.daily_loss_limit_pct}%)"
 
-        # Max open trades (only for new entries)
+        existing = next((p for p in positions if p["ticker"] == ticker), None)
+        is_long  = existing and existing.get("side", "long") == "long"
+        is_short = existing and existing.get("side", "short") == "short"
+        is_crypto = "/" in ticker
+
+        # BUY: need no existing long position (can buy to cover a short)
         if action.upper() in ("BUY", "LONG"):
-            already_in = any(p["ticker"] == ticker for p in positions)
-            if not already_in and len(positions) >= self.max_open_trades:
+            if is_long:
+                return False, f"Already long {ticker}"
+            if not is_short and len(positions) >= self.max_open_trades:
                 return False, f"Max open trades reached ({self.max_open_trades})"
 
-        # Cannot sell what you don't own
-        if action.upper() in ("SELL", "SHORT"):
-            if not any(p["ticker"] == ticker for p in positions):
-                return False, f"No position in {ticker} to sell"
+        # SELL: must hold a long position
+        if action.upper() == "SELL":
+            if not is_long:
+                return False, f"No long position in {ticker} to sell"
+
+        # SHORT: no existing position, not crypto, within trade limit
+        if action.upper() == "SHORT":
+            if is_crypto:
+                return False, "Alpaca does not support shorting crypto"
+            if existing:
+                return False, f"Already have a position in {ticker} — close it first"
+            if len(positions) >= self.max_open_trades:
+                return False, f"Max open trades reached ({self.max_open_trades})"
+
+        # COVER: must hold a short position
+        if action.upper() == "COVER":
+            if not is_short:
+                return False, f"No short position in {ticker} to cover"
 
         return True, "Risk checks passed"
 
     def should_stop_loss(self, position: dict) -> tuple[bool, str]:
         self.reload()
         plpc = position.get("unrealized_plpc", 0)
+        # For both long and short: unrealized_plpc is negative when losing
         if plpc <= -self.stop_loss_pct:
-            return True, f"Stop-loss triggered: {plpc:.2f}% (limit -{self.stop_loss_pct}%)"
+            side = position.get("side", "long")
+            return True, f"Stop-loss triggered on {side}: {plpc:.2f}% (limit -{self.stop_loss_pct}%)"
         return False, ""

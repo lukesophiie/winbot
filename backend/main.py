@@ -705,6 +705,84 @@ async def debug_data(ticker: str = "AAPL"):
     }
 
 
+@app.get("/api/debug/analyse")
+async def debug_analyse(ticker: str = "AAPL"):
+    """Run a single full analysis cycle and return the result or error — for diagnosing why no decisions are logged."""
+    import traceback
+    import pandas as pd
+    from data import fetch_ohlcv
+    from indicators import calculate_all_indicators
+    import anthropic
+
+    steps = {}
+
+    # Step 1: data fetch
+    try:
+        df = pd.DataFrame()
+        for period in ("60d", "30d", "14d", "7d"):
+            df = fetch_ohlcv(ticker, period=period, interval="1h")
+            if not df.empty and len(df) >= 52:
+                break
+        steps["data"] = {"candles": len(df), "sufficient": len(df) >= 52}
+        if df.empty or len(df) < 52:
+            return {"ok": False, "failed_at": "data", "steps": steps}
+    except Exception as e:
+        return {"ok": False, "failed_at": "data", "error": str(e), "steps": steps}
+
+    # Step 2: indicators
+    try:
+        ind = calculate_all_indicators(df)
+        steps["indicators"] = {"rsi": ind.get("rsi"), "price": ind.get("current_price")}
+    except Exception as e:
+        return {"ok": False, "failed_at": "indicators", "error": str(e), "steps": steps}
+
+    # Step 3: broker
+    try:
+        broker = _make_broker()
+        account = broker.get_account()
+        positions = broker.get_positions()
+        steps["broker"] = {"connected": broker.is_connected(), "portfolio_value": account.get("portfolio_value")}
+    except Exception as e:
+        return {"ok": False, "failed_at": "broker", "error": str(e), "steps": steps}
+
+    # Step 4: Claude API
+    try:
+        claude_key = db.get_setting("claude_api_key")
+        if not claude_key:
+            return {"ok": False, "failed_at": "claude_key", "error": "claude_api_key not set", "steps": steps}
+        client = anthropic.Anthropic(api_key=claude_key)
+        steps["claude_key"] = "set (last 4: " + claude_key[-4:] + ")"
+
+        # Build a minimal prompt
+        agent_tmp = TradingAgent(broker=broker, broadcast=None)
+        position = broker.get_position(ticker)
+        prompt = agent_tmp._build_prompt(ticker, ind, position, account, positions)
+
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        steps["claude_raw"] = raw[:500]
+    except Exception as e:
+        return {"ok": False, "failed_at": "claude_api", "error": str(e), "traceback": traceback.format_exc()[-1000:], "steps": steps}
+
+    # Step 5: JSON parse
+    try:
+        import json as _json
+        for fence in ("```json", "```"):
+            if fence in raw:
+                raw = raw.split(fence)[-1].split("```")[0].strip()
+                break
+        decision = _json.loads(raw)
+        steps["decision"] = decision
+    except Exception as e:
+        return {"ok": False, "failed_at": "json_parse", "error": str(e), "raw": raw[:500], "steps": steps}
+
+    return {"ok": True, "steps": steps, "decision": decision}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Run
 # ══════════════════════════════════════════════════════════════════════════════

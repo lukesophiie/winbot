@@ -4,7 +4,280 @@ import {
   ResponsiveContainer, ComposedChart, Area, Line, Bar, Cell,
   XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from 'recharts'
-import { BookOpen, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronUp, RefreshCw, TrendingUp, TrendingDown, Minus, Zap, DollarSign, Clock } from 'lucide-react'
+
+// ── Forecast / Signal Intelligence panel ─────────────────────────────────────
+function ForecastPanel({ ticker, toast }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!ticker) return
+    setLoading(true)
+    setData(null)
+    axios.get(`/api/forecast/${encodeURIComponent(ticker)}`)
+      .then(r => setData(r.data))
+      .catch(() => toast?.(`Could not load forecast for ${ticker}`, 'error'))
+      .finally(() => setLoading(false))
+  }, [ticker, toast])
+
+  if (loading) return (
+    <div className="card p-4 flex items-center gap-2 text-slate-500 text-sm">
+      <RefreshCw size={14} className="animate-spin" /> Loading signal intelligence…
+    </div>
+  )
+  if (!data) return null
+
+  const { signal, signal_pct, indicators: ind, triggers, trade_sizes, frequency, position, current_price } = data
+
+  const signalColor = signal === 'BUY' ? 'text-emerald-400' : signal === 'SELL' ? 'text-red-400' : 'text-amber-400'
+  const signalBg    = signal === 'BUY' ? 'bg-emerald-500/10 border-emerald-500/30' : signal === 'SELL' ? 'bg-red-500/10 border-red-500/30' : 'bg-amber-500/10 border-amber-500/30'
+  const SignalIcon  = signal === 'BUY' ? TrendingUp : signal === 'SELL' ? TrendingDown : Minus
+
+  // Signal bar: map -100..+100 to 0..100% width, centre at 50%
+  const barPct   = Math.min(Math.max((signal_pct + 100) / 2, 0), 100)
+  const barColor = signal_pct > 20 ? 'bg-emerald-500' : signal_pct < -20 ? 'bg-red-500' : 'bg-amber-400'
+
+  return (
+    <div className="space-y-3">
+      {/* ── Overall signal ── */}
+      <div className={`card p-4 border ${signalBg}`}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Zap size={15} className={signalColor} />
+            <span className="text-sm font-semibold text-slate-200">Signal Intelligence</span>
+          </div>
+          <span className={`flex items-center gap-1.5 text-sm font-bold ${signalColor}`}>
+            <SignalIcon size={15} />
+            {signal === 'BUY' ? 'Leaning BUY' : signal === 'SELL' ? 'Leaning SELL' : 'Holding / No trade yet'}
+          </span>
+        </div>
+
+        {/* Signal strength bar */}
+        <div className="mb-1.5">
+          <div className="flex justify-between text-[10px] text-slate-600 mb-1">
+            <span>← Strong Sell</span>
+            <span>Neutral</span>
+            <span>Strong Buy →</span>
+          </div>
+          <div className="relative h-2.5 bg-slate-800 rounded-full overflow-hidden">
+            <div className="absolute top-0 bottom-0 w-px bg-slate-600" style={{ left: '50%' }} />
+            <div
+              className={`absolute top-0 bottom-0 rounded-full transition-all ${barColor}`}
+              style={{
+                left:  signal_pct >= 0 ? '50%' : `${barPct}%`,
+                width: `${Math.abs(signal_pct) / 2}%`,
+              }}
+            />
+          </div>
+          <p className="text-center text-xs text-slate-500 mt-1">
+            Score {signal_pct > 0 ? '+' : ''}{signal_pct} out of 100 &nbsp;·&nbsp;
+            Needs ≥ +40 to buy or ≤ −40 to sell
+          </p>
+        </div>
+
+        {/* 4 indicator pills */}
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          <IndicatorCheck
+            label="RSI"
+            value={`${ind.rsi.toFixed(1)}`}
+            status={ind.rsi < 30 ? 'buy' : ind.rsi > 70 ? 'sell' : 'neutral'}
+            detail={ind.rsi < 30 ? 'Oversold — BUY zone' : ind.rsi > 70 ? 'Overbought — SELL zone' : `Neutral (need <30 to buy, >70 to sell)`}
+          />
+          <IndicatorCheck
+            label="Price vs EMA20"
+            value={`${ind.price_vs_ema20 >= 0 ? '+' : ''}$${ind.price_vs_ema20.toFixed(2)}`}
+            status={ind.price_vs_ema20 > 0 ? 'buy' : 'sell'}
+            detail={ind.price_vs_ema20 > 0 ? 'Price above EMA20 (bullish)' : 'Price below EMA20 (bearish)'}
+          />
+          <IndicatorCheck
+            label="Price vs EMA50"
+            value={`${ind.price_vs_ema50 >= 0 ? '+' : ''}$${ind.price_vs_ema50.toFixed(2)}`}
+            status={ind.price_vs_ema50 > 0 ? 'buy' : 'sell'}
+            detail={ind.price_vs_ema50 > 0 ? 'Price above EMA50 (bullish)' : 'Price below EMA50 (bearish)'}
+          />
+          <IndicatorCheck
+            label="MACD Histogram"
+            value={ind.macd_hist >= 0 ? `+${ind.macd_hist.toFixed(4)}` : ind.macd_hist.toFixed(4)}
+            status={ind.macd_hist > 0 ? 'buy' : 'sell'}
+            detail={ind.macd_hist > 0 ? 'Positive — bullish momentum' : 'Negative — bearish momentum'}
+          />
+        </div>
+      </div>
+
+      {/* ── Buy trigger ── */}
+      <div className="card p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <TrendingUp size={14} className="text-emerald-400" />
+          <span className="text-sm font-semibold text-emerald-400">When will it BUY?</span>
+        </div>
+        <div className="space-y-2 text-sm">
+          {ind.rsi <= 30 ? (
+            <p className="text-emerald-300 font-medium">RSI is already in the oversold zone ({ind.rsi.toFixed(1)}) — BUY conditions met on this indicator</p>
+          ) : (
+            <div className="flex items-start gap-2">
+              <span className="text-slate-400 shrink-0">RSI</span>
+              <div>
+                <span className="text-slate-200">
+                  Currently <strong>{ind.rsi.toFixed(1)}</strong> — needs to drop <strong>{ind.rsi_to_buy.toFixed(1)} more points</strong> to reach oversold (30)
+                </span>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Estimated price drop needed: <strong className="text-amber-400">~${(current_price - triggers.buy_price).toFixed(2)} ({triggers.buy_drop_pct}%)</strong>
+                  {' '}→ triggers around <strong className="text-emerald-400">${triggers.buy_price.toLocaleString()}</strong>
+                </p>
+              </div>
+            </div>
+          )}
+          <div className="flex items-start gap-2">
+            <span className="text-slate-400 shrink-0">EMAs</span>
+            <span className="text-slate-300">
+              {ind.price_vs_ema20 > 0 && ind.price_vs_ema50 > 0
+                ? 'Price is above both EMAs ✓ — bullish trend confirmed'
+                : ind.price_vs_ema20 < 0 || ind.price_vs_ema50 < 0
+                  ? 'Price needs to recover above EMAs before a buy is likely'
+                  : 'Mixed EMA signals'}
+            </span>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="text-slate-400 shrink-0">MACD</span>
+            <span className="text-slate-300">
+              {ind.macd_hist > 0
+                ? 'Positive histogram ✓ — momentum supports a buy'
+                : 'Negative histogram — momentum is bearish, reduces buy likelihood'}
+            </span>
+          </div>
+          <div className="mt-3 p-2.5 rounded-lg bg-emerald-500/8 border border-emerald-500/20 text-xs text-emerald-300/90 leading-relaxed">
+            <strong>In plain English:</strong>{' '}
+            {signal === 'BUY'
+              ? `Current signals are aligned for a buy. The agent may execute on the next cycle.`
+              : `The agent is watching ${ticker} but won't buy until RSI drops closer to 30${ind.macd_hist < 0 ? ' and MACD turns positive' : ''}. Estimated trigger price: ~$${triggers.buy_price.toLocaleString()}.`}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Trade size breakdown ── */}
+      <div className="card p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <DollarSign size={14} className="text-cyan-400" />
+          <span className="text-sm font-semibold text-slate-200">If it buys — how much?</span>
+          <span className="text-xs text-slate-500 ml-auto">Sizes from your portfolio &amp; Settings</span>
+        </div>
+        <p className="text-xs text-slate-500 mb-3">
+          Claude picks sizing based on signal strength. Medium is most common.
+        </p>
+        <div className="space-y-2">
+          {[
+            { key: 'small',  label: 'Small',  desc: 'Conservative — weak signals', pct: 25 },
+            { key: 'medium', label: 'Medium', desc: 'Standard — typical trade',    pct: 50 },
+            { key: 'large',  label: 'Large',  desc: 'Aggressive — strong signals', pct: 100 },
+          ].map(({ key, label, desc, pct }) => {
+            const sz = trade_sizes[key]
+            return (
+              <div key={key} className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-navy-900/60 border border-slate-700/40">
+                <div className="w-14 shrink-0">
+                  <span className={`text-xs font-bold ${key === 'medium' ? 'text-cyan-400' : 'text-slate-400'}`}>{label}</span>
+                  {key === 'medium' && <span className="block text-[9px] text-cyan-500/70">most likely</span>}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-1 font-mono">
+                    <span className="text-slate-200 font-semibold">${sz.dollars.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+                    <span className="text-slate-500 text-xs">→</span>
+                    <span className="text-slate-300 text-sm">{sz.units.toFixed(sz.units < 1 ? 4 : 2)} shares</span>
+                    <span className="text-slate-600 text-xs">@ ${current_price.toFixed(2)}</span>
+                  </div>
+                  <p className="text-xs text-slate-600">{desc}</p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ── Sell / Stop-loss ── */}
+      <div className="card p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <TrendingDown size={14} className="text-red-400" />
+          <span className="text-sm font-semibold text-slate-200">When will it SELL?</span>
+        </div>
+        <div className="space-y-2.5 text-sm">
+          {position ? (
+            <div className="p-2.5 rounded-lg bg-cyan-500/8 border border-cyan-500/20 text-xs text-cyan-300 mb-2">
+              <strong>Open position:</strong> Holding {position.quantity} units @ avg ${Number(position.avg_entry_price).toFixed(2)} ·
+              unrealised {Number(position.unrealized_pl) >= 0 ? '+' : ''}${Number(position.unrealized_pl).toFixed(2)}
+            </div>
+          ) : null}
+
+          <div className="flex justify-between items-start py-1 border-b border-slate-700/30">
+            <div>
+              <p className="text-slate-300 font-medium">Take Profit (RSI &gt; 70)</p>
+              <p className="text-xs text-slate-500">Agent sells when overbought — RSI needs {ind.rsi_to_sell.toFixed(1)} more points</p>
+            </div>
+            <span className="text-emerald-400 font-mono font-semibold shrink-0 ml-3">
+              ~${triggers.sell_price.toLocaleString()}
+              <span className="text-xs text-slate-500 ml-1">(+{triggers.sell_rise_pct}%)</span>
+            </span>
+          </div>
+
+          <div className="flex justify-between items-start py-1">
+            <div>
+              <p className="text-red-400 font-medium">Stop-Loss (−{triggers.stop_loss_pct}%)</p>
+              <p className="text-xs text-slate-500">
+                Auto-sell if position drops {triggers.stop_loss_pct}% — caps the loss automatically
+              </p>
+            </div>
+            <span className="text-red-400 font-mono font-semibold shrink-0 ml-3">
+              ${triggers.stop_loss_price.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Frequency ── */}
+      <div className="card p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Clock size={14} className="text-slate-400" />
+          <span className="text-sm font-semibold text-slate-200">How often will it trade?</span>
+        </div>
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <FreqStat value={`${frequency.interval_minutes}m`} label="Analysis cycle" />
+          <FreqStat value={`${frequency.analyses_per_day}`} label="Analyses/day" sub={`across ${frequency.watchlist_size} ticker${frequency.watchlist_size !== 1 ? 's' : ''}`} />
+          <FreqStat value="1–4" label="Typical trades/week" sub="per ticker" />
+        </div>
+        <p className="text-xs text-slate-600 mt-3 leading-relaxed">
+          Each cycle, Claude analyses every ticker in your watchlist and decides BUY / SELL / HOLD.
+          Most cycles result in HOLD — a trade only fires when confidence ≥ 70% with aligned signals.
+          Low volatility periods can go several days without a trade.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function IndicatorCheck({ label, value, status, detail }) {
+  const colors = { buy: 'border-emerald-500/30 bg-emerald-500/8', sell: 'border-red-500/30 bg-red-500/8', neutral: 'border-slate-600/30 bg-slate-700/20' }
+  const dots   = { buy: 'bg-emerald-400', sell: 'bg-red-400', neutral: 'bg-amber-400' }
+  const texts  = { buy: 'text-emerald-300', sell: 'text-red-300', neutral: 'text-amber-300' }
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${colors[status]}`}>
+      <div className="flex items-center gap-1.5 mb-0.5">
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dots[status]}`} />
+        <span className="text-xs text-slate-500">{label}</span>
+        <span className={`text-xs font-mono font-bold ml-auto ${texts[status]}`}>{value}</span>
+      </div>
+      <p className="text-[10px] text-slate-500 leading-relaxed">{detail}</p>
+    </div>
+  )
+}
+
+function FreqStat({ value, label, sub }) {
+  return (
+    <div className="bg-navy-900/60 rounded-lg border border-slate-700/40 px-2 py-3">
+      <p className="text-lg font-bold font-mono text-cyan-400">{value}</p>
+      <p className="text-[10px] text-slate-400 leading-snug">{label}</p>
+      {sub && <p className="text-[9px] text-slate-600">{sub}</p>}
+    </div>
+  )
+}
 
 // ── Educational guide content ─────────────────────────────────────────────────
 const GUIDE = [
@@ -369,6 +642,9 @@ export default function TickerChart({ ticker, trades = [], reasoning = [], toast
           </button>
         </div>
       </div>
+
+      {/* ── Signal Intelligence / Forecast ── */}
+      <ForecastPanel ticker={ticker} toast={toast} />
 
       {loading && (
         <div className="card h-48 flex items-center justify-center text-slate-500 text-sm gap-2">

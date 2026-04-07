@@ -327,6 +327,109 @@ async def get_performance():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  Signal forecast — buy/sell triggers, trade sizes, frequency
+# ══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/forecast/{ticker}")
+async def get_forecast(ticker: str):
+    from data import fetch_ohlcv
+    from indicators import calculate_all_indicators
+
+    df = fetch_ohlcv(ticker, period="60d", interval="1h")
+    if df.empty:
+        raise HTTPException(404, f"No data for {ticker}")
+
+    ind = calculate_all_indicators(df)
+    price     = ind["current_price"]
+    rsi       = ind["rsi"]
+    ema20     = ind["ema20"]
+    ema50     = ind["ema50"]
+    macd_hist = ind["macd"]["histogram"]
+
+    # Portfolio value
+    broker = _make_broker()
+    portfolio_value = 100_000.0
+    position = None
+    if broker.is_connected():
+        acct = broker.get_account()
+        portfolio_value = float(acct.get("portfolio_value") or 100_000)
+        position = broker.get_position(ticker)
+
+    # Settings
+    max_pos_pct   = float(db.get_setting("max_position_size_pct") or 10)
+    stop_loss_pct = float(db.get_setting("stop_loss_pct") or 2)
+    interval_min  = int(db.get_setting("trading_interval") or 5)
+
+    # ── Signal score (-100 to +100) based on 5 indicator checks ──────────────
+    score = 0
+    score += 2  if rsi < 30 else (1 if rsi < 45 else (-1 if rsi > 55 else (-2 if rsi > 70 else 0)))
+    score += 1  if price > ema20 else -1
+    score += 1  if price > ema50 else -1
+    score += 1  if macd_hist > 0 else -1
+    signal_pct = round(score / 5 * 100)           # -100 to +100
+    signal     = "BUY" if signal_pct >= 40 else ("SELL" if signal_pct <= -40 else "HOLD")
+
+    # ── Distance to triggers ──────────────────────────────────────────────────
+    rsi_to_buy  = round(rsi - 30, 1)    # how many RSI points until oversold
+    rsi_to_sell = round(70 - rsi, 1)    # how many RSI points until overbought
+
+    # Rough price estimate for RSI triggers (uses recent volatility as proxy)
+    closes      = df["close"].astype(float)
+    vol_14      = float(closes.tail(14).pct_change().std() * 100)  # % std
+    # Approx: each 1% price drop moves RSI ~(100/vol_factor) points
+    pct_per_rsi_point = vol_14 / 10 if vol_14 > 0 else 0.15
+    buy_price   = round(price * (1 - rsi_to_buy  * pct_per_rsi_point / 100), 2) if rsi_to_buy  > 0 else price
+    sell_price  = round(price * (1 + rsi_to_sell * pct_per_rsi_point / 100), 2) if rsi_to_sell > 0 else price
+
+    # Stop-loss from current price (or open position entry)
+    entry_price = price
+    if position:
+        entry_price = float(position.get("avg_entry_price") or price)
+    stop_price  = round(entry_price * (1 - stop_loss_pct / 100), 2)
+
+    # ── Trade sizes ───────────────────────────────────────────────────────────
+    def sz(factor: float):
+        dollars = round(portfolio_value * max_pos_pct * factor / 100, 2)
+        units   = round(dollars / price, 4) if price > 0 else 0
+        return {"dollars": dollars, "units": units}
+
+    return {
+        "ticker":          ticker,
+        "current_price":   price,
+        "signal":          signal,
+        "signal_pct":      signal_pct,
+        "indicators": {
+            "rsi":            rsi,
+            "rsi_to_buy":     rsi_to_buy,
+            "rsi_to_sell":    rsi_to_sell,
+            "ema20":          ema20,
+            "ema50":          ema50,
+            "price_vs_ema20": round(price - ema20, 2),
+            "price_vs_ema50": round(price - ema50, 2),
+            "macd_hist":      macd_hist,
+        },
+        "triggers": {
+            "buy_price":           buy_price,
+            "sell_price":          sell_price,
+            "stop_loss_price":     stop_price,
+            "stop_loss_pct":       stop_loss_pct,
+            "buy_drop_pct":        round((price - buy_price) / price * 100, 1) if buy_price < price else 0,
+            "sell_rise_pct":       round((sell_price - price) / price * 100, 1) if sell_price > price else 0,
+        },
+        "trade_sizes": {
+            "small":  sz(0.25),
+            "medium": sz(0.50),
+            "large":  sz(1.00),
+        },
+        "position":        position,
+        "frequency": {
+            "interval_minutes":   interval_min,
+            "analyses_per_day":   int(24 * 60 / interval_min),
+            "watchlist_size":     len(json.loads(db.get_setting("watchlist") or "[]")),
+        },
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Debug endpoint (temporary — remove after diagnosing data issues)
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/debug/data/{ticker}")

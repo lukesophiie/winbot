@@ -249,12 +249,13 @@ async def set_mode(body: ModeBody):
 @app.get("/api/agent/status")
 async def agent_status():
     broker = _make_broker()
+    broker_error = broker.last_error if not broker.is_connected() else None
     return {
         "running": _agent_running,
         "mode": db.get_setting("trading_mode"),
         "interval": db.get_setting("trading_interval"),
         "broker_connected": broker.is_connected(),
-        "last_error": _agent.last_error if _agent else None,
+        "last_error": (_agent.last_error if _agent else None) or broker_error,
     }
 
 

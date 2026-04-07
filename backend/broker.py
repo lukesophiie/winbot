@@ -13,6 +13,7 @@ class AlpacaBroker:
         self.paper = paper
         self._client = None
         self._connected = False
+        self.last_error: str | None = None
 
         if api_key and secret_key:
             self._init_client()
@@ -35,6 +36,7 @@ class AlpacaBroker:
         except Exception as e:
             logger.error(f"[broker] Alpaca init failed: {e}")
             self._connected = False
+            self.last_error = str(e)
 
     def is_connected(self) -> bool:
         return self._connected

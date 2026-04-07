@@ -62,8 +62,22 @@ function ChartTooltip({ active, payload, label }) {
 export default function Dashboard({
   agentRunning, agentLoading, startAgent, stopAgent,
   portfolio, positions, trades, portfolioHistory, tradingMode,
+  toast,
 }) {
   const [winRate, setWinRate] = useState(null)
+  const [runningNow, setRunningNow] = useState(false)
+
+  const runNow = async () => {
+    setRunningNow(true)
+    try {
+      await axios.post('/api/agent/run-now')
+      toast?.('Cycle triggered — decisions will appear shortly', 'success')
+    } catch (e) {
+      toast?.(e.response?.data?.detail || 'Failed to trigger cycle', 'error')
+    } finally {
+      setTimeout(() => setRunningNow(false), 3000)
+    }
+  }
 
   useEffect(() => {
     axios.get('/api/performance').then(({ data }) => setWinRate(data.stats?.win_rate ?? null))
@@ -112,9 +126,19 @@ export default function Dashboard({
             )}
           </div>
           {agentRunning ? (
-            <button onClick={stopAgent} disabled={agentLoading} className="btn-danger text-sm">
-              <ZapOff size={15} /> Stop Agent
-            </button>
+            <>
+              <button
+                onClick={runNow}
+                disabled={runningNow}
+                className="btn-secondary text-sm"
+                title="Force an immediate analysis cycle"
+              >
+                <Activity size={15} /> {runningNow ? 'Running…' : 'Run Now'}
+              </button>
+              <button onClick={stopAgent} disabled={agentLoading} className="btn-danger text-sm">
+                <ZapOff size={15} /> Stop Agent
+              </button>
+            </>
           ) : (
             <button onClick={startAgent} disabled={agentLoading} className="btn-primary text-sm">
               <Zap size={15} /> {agentLoading ? 'Starting…' : 'Start Agent'}

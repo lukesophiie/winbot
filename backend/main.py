@@ -356,6 +356,15 @@ async def stop_agent():
     return {"status": "stopped"}
 
 
+@app.post("/api/agent/run-now")
+async def run_agent_now():
+    """Trigger an immediate analysis cycle without waiting for the timer."""
+    if not _agent_running or not _agent:
+        raise HTTPException(400, "Agent is not running")
+    asyncio.create_task(_agent.run_cycle())
+    return {"status": "cycle_triggered"}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Performance
 # ══════════════════════════════════════════════════════════════════════════════
@@ -615,6 +624,15 @@ async def get_trader_detail(name: str):
         "winning_trades": len(winning),
         "win_rate": round(len(winning) / len(all_trades) * 100, 1) if all_trades else 0.0,
     }
+
+
+@app.post("/api/traders/{name}/run-now")
+async def run_trader_now(name: str):
+    """Trigger an immediate cycle for a trader."""
+    if name not in _trader_agents or not _trader_agents[name].running:
+        raise HTTPException(400, f"Trader '{name}' is not running")
+    asyncio.create_task(_trader_agents[name].run_cycle())
+    return {"status": "cycle_triggered"}
 
 
 @app.post("/api/traders/{name}/start")

@@ -450,31 +450,6 @@ async def get_forecast(ticker: str):
     }
 
 
-# ── Temporary crypto debug ────────────────────────────────────────────────────
-@app.get("/api/debug/crypto")
-async def debug_crypto():
-    import traceback
-    from data import _alpaca_keys, _fetch_alpaca, _period_to_days, _interval_to_alpaca_tf
-    from datetime import datetime, timedelta, timezone
-    key, secret = _alpaca_keys()
-    result = {"key_prefix": key[:8] if key else None}
-    for symbol in ("BTC/USD", "BTCUSD"):
-        try:
-            from alpaca.data.historical import CryptoHistoricalDataClient
-            from alpaca.data.requests   import CryptoBarsRequest
-            from alpaca.data.timeframe  import TimeFrame
-            client = CryptoHistoricalDataClient(key, secret)
-            end    = datetime.now(timezone.utc)
-            start  = end - timedelta(days=7)
-            req    = CryptoBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Hour, start=start, end=end)
-            bars   = client.get_crypto_bars(req)
-            df     = bars.df
-            result[symbol] = {"rows": len(df), "columns": list(df.columns), "index_type": str(type(df.index).__name__)}
-        except Exception as e:
-            result[symbol] = {"error": str(e), "trace": traceback.format_exc()[-600:]}
-    return result
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  Chart data  (OHLCV + indicator series for the frontend chart)
 # ══════════════════════════════════════════════════════════════════════════════

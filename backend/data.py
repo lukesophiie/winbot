@@ -99,7 +99,12 @@ def _fetch_alpaca(ticker: str, period: str, interval: str) -> pd.DataFrame | Non
     if isinstance(df.index, pd.MultiIndex):
         df = df.droplevel(0)
 
-    df.index = pd.to_datetime(df.index, utc=True).tz_convert(None)  # tz-naive UTC
+    # Ensure tz-naive UTC index (tz_convert(None) removes timezone cleanly)
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+    if df.index.tz is not None:
+        df.index = df.index.tz_convert(None)
+
     df.columns = [c.lower() for c in df.columns]
 
     required = ["open", "high", "low", "close", "volume"]

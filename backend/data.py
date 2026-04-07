@@ -1,33 +1,126 @@
 import logging
-import requests
 import pandas as pd
-import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# Session with browser-like headers so Yahoo Finance doesn't block cloud IPs
-_session = requests.Session()
-_session.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-})
-
 
 def _to_yf(ticker: str) -> str:
-    """Convert Alpaca-style ticker to yfinance format (BTC/USD -> BTC-USD)."""
     return ticker.replace("/", "-")
+
+
+def _alpaca_keys():
+    """Return (key, secret) — prefers paper, falls back to live."""
+    from database import get_setting
+    key    = get_setting("alpaca_paper_key")    or get_setting("alpaca_live_key")    or ""
+    secret = get_setting("alpaca_paper_secret") or get_setting("alpaca_live_secret") or ""
+    return key, secret
+
+
+def _interval_to_alpaca_tf(interval: str):
+    from alpaca.data.timeframe import TimeFrame
+    mapping = {
+        "1m":  TimeFrame.Minute,
+        "5m":  TimeFrame.Minute,
+        "15m": TimeFrame.Minute,
+        "30m": TimeFrame.Minute,
+        "1h":  TimeFrame.Hour,
+        "1d":  TimeFrame.Day,
+    }
+    return mapping.get(interval, TimeFrame.Hour)
+
+
+def _period_to_days(period: str) -> int:
+    mapping = {"1d": 2, "5d": 7, "1mo": 35, "3mo": 95, "60d": 65}
+    try:
+        if period.endswith("d"):
+            return int(period[:-1]) + 2
+        if period.endswith("mo"):
+            return int(period[:-2]) * 31 + 5
+    except Exception:
+        pass
+    return mapping.get(period, 65)
 
 
 def fetch_ohlcv(ticker: str, period: str = "60d", interval: str = "1h") -> pd.DataFrame:
     """
-    Fetch OHLCV data via yfinance.
+    Fetch OHLCV data. Tries Alpaca market data first (reliable on Railway),
+    falls back to yfinance if Alpaca keys aren't set.
     Returns DataFrame with lowercase columns: open, high, low, close, volume.
     """
+    # ── Alpaca path ───────────────────────────────────────────────────────────
+    try:
+        df = _fetch_alpaca(ticker, period, interval)
+        if df is not None and not df.empty and len(df) >= 10:
+            logger.info(f"[data] {ticker}: {len(df)} candles via Alpaca")
+            return df
+    except Exception as e:
+        logger.warning(f"[data] Alpaca fetch failed for {ticker}: {e}")
+
+    # ── yfinance fallback ─────────────────────────────────────────────────────
+    logger.info(f"[data] Falling back to yfinance for {ticker}")
+    return _fetch_yfinance(ticker, period, interval)
+
+
+def _fetch_alpaca(ticker: str, period: str, interval: str) -> pd.DataFrame | None:
+    from datetime import datetime, timedelta, timezone
+    key, secret = _alpaca_keys()
+    if not key or not secret:
+        return None
+
+    tf   = _interval_to_alpaca_tf(interval)
+    days = _period_to_days(period)
+    end  = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+
+    is_crypto = "/" in ticker
+    clean     = ticker.replace("/", "")
+
+    if is_crypto:
+        from alpaca.data.historical import CryptoHistoricalDataClient
+        from alpaca.data.requests   import CryptoBarsRequest
+        client = CryptoHistoricalDataClient(key, secret)
+        req    = CryptoBarsRequest(symbol_or_symbols=clean, timeframe=tf, start=start, end=end)
+        bars   = client.get_crypto_bars(req)
+    else:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests   import StockBarsRequest
+        client = StockHistoricalDataClient(key, secret)
+        req    = StockBarsRequest(symbol_or_symbols=ticker, timeframe=tf, start=start, end=end)
+        bars   = client.get_stock_bars(req)
+
+    df = bars.df
+    if df.empty:
+        return None
+
+    # Alpaca returns MultiIndex (symbol, timestamp) — drop symbol level
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.droplevel(0)
+
+    df.index = pd.to_datetime(df.index, utc=True).tz_convert(None)  # tz-naive UTC
+    df.columns = [c.lower() for c in df.columns]
+
+    required = ["open", "high", "low", "close", "volume"]
+    missing  = [c for c in required if c not in df.columns]
+    if missing:
+        logger.warning(f"[data] Alpaca response missing columns: {missing}")
+        return None
+
+    return df[required].dropna()
+
+
+def _fetch_yfinance(ticker: str, period: str, interval: str) -> pd.DataFrame:
+    import requests as req_lib
+    import yfinance as yf
+
+    session = req_lib.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    })
+
     yf_ticker = _to_yf(ticker)
     for attempt in range(3):
         try:
@@ -38,39 +131,63 @@ def fetch_ohlcv(ticker: str, period: str = "60d", interval: str = "1h") -> pd.Da
                 progress=False,
                 auto_adjust=True,
                 threads=False,
-                session=_session,
+                session=session,
             )
             if raw.empty:
-                logger.warning(f"[data] No data for {ticker} (attempt {attempt+1})")
+                logger.warning(f"[data] yfinance: no data for {ticker} (attempt {attempt+1})")
                 continue
 
-            # Flatten multi-level columns if present
             if isinstance(raw.columns, pd.MultiIndex):
                 raw.columns = [col[0].lower() for col in raw.columns]
             else:
                 raw.columns = [c.lower() for c in raw.columns]
 
             required = ["open", "high", "low", "close", "volume"]
-            missing = [c for c in required if c not in raw.columns]
+            missing  = [c for c in required if c not in raw.columns]
             if missing:
-                logger.error(f"[data] Missing columns {missing} for {ticker}")
+                logger.error(f"[data] yfinance missing columns {missing} for {ticker}")
                 return pd.DataFrame()
 
             df = raw[required].dropna()
-            logger.info(f"[data] {ticker}: {len(df)} candles fetched")
+            logger.info(f"[data] {ticker}: {len(df)} candles via yfinance")
             return df
 
         except Exception as e:
-            logger.error(f"[data] Error fetching {ticker} (attempt {attempt+1}): {e}")
+            logger.error(f"[data] yfinance error for {ticker} (attempt {attempt+1}): {e}")
 
     return pd.DataFrame()
 
 
 def fetch_current_price(ticker: str) -> float:
-    """Fetch the latest price for a ticker."""
-    yf_ticker = _to_yf(ticker)
+    """Fetch the latest price. Uses Alpaca first, then yfinance."""
     try:
-        t = yf.Ticker(yf_ticker)
+        key, secret = _alpaca_keys()
+        if key and secret:
+            is_crypto = "/" in ticker
+            clean     = ticker.replace("/", "")
+            if is_crypto:
+                from alpaca.data.historical import CryptoHistoricalDataClient
+                from alpaca.data.requests   import LatestCryptoBarRequest
+                client = CryptoHistoricalDataClient(key, secret)
+                req    = LatestCryptoBarRequest(symbol_or_symbols=clean)
+                bar    = client.get_crypto_latest_bar(req)
+                if bar and clean in bar:
+                    return round(float(bar[clean].close), 4)
+            else:
+                from alpaca.data.historical import StockHistoricalDataClient
+                from alpaca.data.requests   import LatestStockBarRequest
+                client = StockHistoricalDataClient(key, secret)
+                req    = LatestStockBarRequest(symbol_or_symbols=ticker)
+                bar    = client.get_stock_latest_bar(req)
+                if bar and ticker in bar:
+                    return round(float(bar[ticker].close), 4)
+    except Exception as e:
+        logger.warning(f"[data] Alpaca price fetch failed for {ticker}: {e}")
+
+    # yfinance fallback
+    try:
+        import yfinance as yf
+        t    = yf.Ticker(_to_yf(ticker))
         info = t.fast_info
         price = getattr(info, "last_price", None)
         if not price:

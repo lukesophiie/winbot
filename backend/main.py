@@ -201,6 +201,11 @@ async def remove_ticker(ticker: str):
 @app.get("/api/settings")
 async def get_settings():
     raw = db.get_all_settings()
+    # Overlay env vars (Railway env vars take priority — show them even if DB is empty)
+    for db_key, env_key in db._ENV_MAP.items():
+        env_val = os.environ.get(env_key)
+        if env_val:
+            raw[db_key] = env_val
     masked = {}
     for k, v in raw.items():
         if ("key" in k.lower() or "secret" in k.lower()) and v:

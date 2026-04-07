@@ -12,6 +12,7 @@ import Settings from './components/Settings.jsx'
 // In production, VITE_API_URL points to Railway backend (e.g. https://winbot.up.railway.app)
 const BACKEND = import.meta.env.VITE_API_URL || ''
 const API = `${BACKEND}/api`
+if (BACKEND) axios.defaults.baseURL = BACKEND
 const WS_URL = BACKEND
   ? BACKEND.replace(/^http/, 'ws') + '/ws'
   : `ws://${window.location.host}/ws`

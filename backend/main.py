@@ -28,6 +28,9 @@ _agent: TradingAgent | None = None
 _agent_task: asyncio.Task | None = None
 _agent_running: bool = False
 
+_trader_agents: dict = {}
+_trader_tasks:  dict = {}
+
 
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 async def broadcast(message: dict):
@@ -79,8 +82,22 @@ async def lifespan(app: FastAPI):
             logger.error(f"Auto-restart failed: {e}")
             db.set_setting("agent_autostart", "false")
 
+    # Auto-restart active trader agents
+    for t in db.get_traders():
+        if t["active"]:
+            try:
+                from trader_agent import TraderAgent as TA
+                ta = TA(t, broadcast=broadcast)
+                _trader_agents[t["name"]] = ta
+                _trader_tasks[t["name"]] = asyncio.create_task(ta.run())
+                logger.info(f"Trader {t['name']} auto-restarted")
+            except Exception as e:
+                logger.error(f"Trader {t['name']} auto-restart failed: {e}")
+
     yield
 
+    for ta in _trader_agents.values():
+        ta.stop()
     if _agent:
         _agent.stop()
     logger.info("WinBot backend shutdown")
@@ -514,6 +531,177 @@ async def get_chart_data(ticker: str, period: str = "5d"):
         "candles":   candles[-200:],
         "trades":    ticker_trades[:50],
         "decisions": ticker_decisions[:50],
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Traders
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/traders")
+async def get_traders():
+    from data import fetch_current_price
+    traders = db.get_traders()
+    result = []
+    for t in traders:
+        positions = db.get_trader_positions(t["name"])
+        cash = float(t["cash"])
+        # Calculate live portfolio value
+        positions_value = 0.0
+        for ticker, pos in positions.items():
+            try:
+                price = fetch_current_price(ticker)
+                positions_value += pos["qty"] * (price if price > 0 else pos["avg_price"])
+            except Exception:
+                positions_value += pos["qty"] * pos["avg_price"]
+        portfolio_value = cash + positions_value
+        allocation = float(t["allocation"])
+        pnl = portfolio_value - allocation
+        pnl_pct = (pnl / allocation * 100) if allocation > 0 else 0.0
+        result.append({
+            **t,
+            "portfolio_value": round(portfolio_value, 2),
+            "positions_value": round(positions_value, 2),
+            "pnl": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "is_running": t["name"] in _trader_agents and _trader_agents[t["name"]].running,
+        })
+    return {"traders": result}
+
+
+@app.get("/api/traders/{name}")
+async def get_trader_detail(name: str):
+    from data import fetch_current_price
+    t = db.get_trader(name)
+    if not t:
+        raise HTTPException(404, f"Trader '{name}' not found")
+    positions = db.get_trader_positions(name)
+    cash = float(t["cash"])
+    positions_with_prices = {}
+    positions_value = 0.0
+    for ticker, pos in positions.items():
+        try:
+            price = fetch_current_price(ticker)
+        except Exception:
+            price = pos["avg_price"]
+        live_value = pos["qty"] * (price if price > 0 else pos["avg_price"])
+        pnl_pos = (
+            (price - pos["avg_price"]) * pos["qty"] if pos["side"] == "long"
+            else (pos["avg_price"] - price) * pos["qty"]
+        )
+        positions_with_prices[ticker] = {
+            **pos,
+            "current_price": price,
+            "live_value": round(live_value, 2),
+            "unrealized_pnl": round(pnl_pos, 2),
+        }
+        positions_value += live_value
+    portfolio_value = cash + positions_value
+    allocation = float(t["allocation"])
+    pnl = portfolio_value - allocation
+    pnl_pct = (pnl / allocation * 100) if allocation > 0 else 0.0
+    all_trades = db.get_trader_trades(name, limit=10000)
+    trade_pnls = [tr["pnl"] for tr in all_trades if tr.get("pnl")]
+    winning = [p for p in trade_pnls if p > 0]
+    return {
+        **t,
+        "portfolio_value": round(portfolio_value, 2),
+        "positions_value": round(positions_value, 2),
+        "pnl": round(pnl, 2),
+        "pnl_pct": round(pnl_pct, 2),
+        "is_running": name in _trader_agents and _trader_agents[name].running,
+        "positions": positions_with_prices,
+        "total_trades": len(all_trades),
+        "winning_trades": len(winning),
+        "win_rate": round(len(winning) / len(all_trades) * 100, 1) if all_trades else 0.0,
+    }
+
+
+@app.post("/api/traders/{name}/start")
+async def start_trader(name: str):
+    global _trader_agents, _trader_tasks
+
+    if not db.get_setting("claude_api_key"):
+        raise HTTPException(400, "Claude API key not configured in Settings")
+
+    t = db.get_trader(name)
+    if not t:
+        raise HTTPException(404, f"Trader '{name}' not found")
+
+    if name in _trader_agents and _trader_agents[name].running:
+        return {"status": "already_running"}
+
+    from trader_agent import TraderAgent as TA
+    ta = TA(t, broadcast=broadcast)
+    _trader_agents[name] = ta
+    _trader_tasks[name] = asyncio.create_task(ta.run())
+    logger.info(f"Trader {name} started via API")
+    return {"status": "started"}
+
+
+@app.post("/api/traders/{name}/stop")
+async def stop_trader(name: str):
+    global _trader_agents, _trader_tasks
+
+    if name not in _trader_agents or not _trader_agents[name].running:
+        return {"status": "not_running"}
+
+    _trader_agents[name].stop()
+    if name in _trader_tasks:
+        _trader_tasks[name].cancel()
+        try:
+            await _trader_tasks[name]
+        except (asyncio.CancelledError, Exception):
+            pass
+        del _trader_tasks[name]
+    del _trader_agents[name]
+    db.set_trader_active(name, False)
+    logger.info(f"Trader {name} stopped via API")
+    return {"status": "stopped"}
+
+
+@app.post("/api/traders/{name}/reset")
+async def reset_trader(name: str):
+    if name in _trader_agents and _trader_agents[name].running:
+        raise HTTPException(400, "Stop the trader before resetting")
+    t = db.get_trader(name)
+    if not t:
+        raise HTTPException(404, f"Trader '{name}' not found")
+    db.reset_trader(name)
+    logger.info(f"Trader {name} reset via API")
+    return {"status": "reset"}
+
+
+@app.get("/api/traders/{name}/trades")
+async def get_trader_trades(name: str, limit: int = 50):
+    t = db.get_trader(name)
+    if not t:
+        raise HTTPException(404, f"Trader '{name}' not found")
+    return {"trades": db.get_trader_trades(name, limit)}
+
+
+@app.get("/api/traders/{name}/decisions")
+async def get_trader_decisions(name: str, limit: int = 50):
+    t = db.get_trader(name)
+    if not t:
+        raise HTTPException(404, f"Trader '{name}' not found")
+    return {"decisions": db.get_trader_decisions(name, limit)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Debug
+# ══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/debug/data")
+async def debug_data(ticker: str = "AAPL"):
+    from data import fetch_ohlcv, fetch_current_price
+    df = fetch_ohlcv(ticker, period="7d", interval="1h")
+    price = fetch_current_price(ticker)
+    return {
+        "ticker": ticker,
+        "candles": len(df),
+        "current_price": price,
+        "columns": list(df.columns) if not df.empty else [],
+        "sample": df.tail(3).to_dict("records") if not df.empty else [],
     }
 
 

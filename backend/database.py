@@ -102,6 +102,86 @@ def init_db():
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value),
             )
+
+        # Trader tables
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS traders (
+                name TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                emoji TEXT NOT NULL,
+                personality TEXT NOT NULL,
+                style TEXT NOT NULL,
+                color TEXT NOT NULL,
+                confidence_threshold REAL NOT NULL,
+                max_position_size_pct REAL NOT NULL,
+                stop_loss_pct REAL NOT NULL,
+                daily_loss_limit_pct REAL NOT NULL,
+                trading_interval INTEGER NOT NULL,
+                allocation REAL NOT NULL DEFAULT 10000.0,
+                cash REAL NOT NULL DEFAULT 10000.0,
+                active INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS trader_positions (
+                trader_name TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                qty REAL NOT NULL,
+                avg_price REAL NOT NULL,
+                side TEXT NOT NULL DEFAULT 'long',
+                opened_at TEXT NOT NULL,
+                PRIMARY KEY (trader_name, ticker)
+            );
+            CREATE TABLE IF NOT EXISTS trader_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trader_name TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                action TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                price REAL NOT NULL,
+                total_value REAL NOT NULL,
+                timestamp TEXT NOT NULL,
+                pnl REAL DEFAULT 0.0
+            );
+            CREATE TABLE IF NOT EXISTS trader_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trader_name TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                action TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                sizing TEXT NOT NULL,
+                reasoning TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                executed INTEGER DEFAULT 0,
+                blocked_reason TEXT,
+                rsi REAL,
+                macd REAL,
+                ema20 REAL,
+                ema50 REAL,
+                current_price REAL
+            );
+        """)
+
+        _now = datetime.utcnow().isoformat()
+        _traders = [
+            ("luke",     "Luke",     "🔥", "most aggressive", "Scalper",  "red",    0.50, 15.0, 3.0,  15.0, 5),
+            ("aiden",    "Aiden",    "⚡", "aggressive",      "Momentum", "orange", 0.58, 12.0, 2.5,  10.0, 5),
+            ("mitchell", "Mitchell", "⚖️", "balanced",        "Swing",    "blue",   0.65, 10.0, 2.0,   5.0, 10),
+            ("michaela", "Michaela", "🛡️", "conservative",    "Position", "green",  0.75,  7.0, 1.5,   3.0, 10),
+            ("billy",    "Billy",    "🧊", "most conservative","Value",   "slate",  0.85,  5.0, 1.0,   2.0, 15),
+        ]
+        for (name, display_name, emoji, personality, style, color,
+             conf, pos_pct, sl_pct, dl_pct, interval) in _traders:
+            cursor.execute(
+                """INSERT OR IGNORE INTO traders
+                   (name, display_name, emoji, personality, style, color,
+                    confidence_threshold, max_position_size_pct, stop_loss_pct,
+                    daily_loss_limit_pct, trading_interval,
+                    allocation, cash, active, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 10000.0, 10000.0, 0, ?)""",
+                (name, display_name, emoji, personality, style, color,
+                 conf, pos_pct, sl_pct, dl_pct, interval, _now),
+            )
+
         conn.commit()
         conn.close()
 
@@ -264,3 +344,283 @@ def get_performance_stats() -> dict:
         "best_trade": round(max(pnls), 2) if pnls else 0.0,
         "worst_trade": round(min(pnls), 2) if pnls else 0.0,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Trader functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_traders() -> list:
+    with _lock:
+        conn = get_connection()
+        rows = conn.execute("SELECT * FROM traders ORDER BY name").fetchall()
+        traders = []
+        for r in rows:
+            t = dict(r)
+            # Trade count and win rate
+            trades_rows = conn.execute(
+                "SELECT pnl FROM trader_trades WHERE trader_name = ?", (t["name"],)
+            ).fetchall()
+            pnls = [tr["pnl"] for tr in trades_rows]
+            winning = [p for p in pnls if p > 0]
+            losing  = [p for p in pnls if p < 0]
+            t["total_trades"]   = len(pnls)
+            t["winning_trades"] = len(winning)
+            t["losing_trades"]  = len(losing)
+            t["win_rate"]       = round(len(winning) / len(pnls) * 100, 1) if pnls else 0.0
+            t["total_pnl"]      = round(sum(pnls), 2) if pnls else 0.0
+            traders.append(t)
+        conn.close()
+        return traders
+
+
+def get_trader(name: str) -> dict | None:
+    with _lock:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT * FROM traders WHERE name = ?", (name,)
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+
+def get_trader_positions(name: str) -> dict:
+    """Returns {ticker: {qty, avg_price, side, opened_at}}"""
+    with _lock:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT * FROM trader_positions WHERE trader_name = ?", (name,)
+        ).fetchall()
+        conn.close()
+        return {
+            r["ticker"]: {
+                "qty": r["qty"],
+                "avg_price": r["avg_price"],
+                "side": r["side"],
+                "opened_at": r["opened_at"],
+            }
+            for r in rows
+        }
+
+
+def get_trader_cash(name: str) -> float:
+    with _lock:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT cash FROM traders WHERE name = ?", (name,)
+        ).fetchone()
+        conn.close()
+        return float(row["cash"]) if row else 0.0
+
+
+def trader_virtual_buy(name: str, ticker: str, qty: float, price: float):
+    cost = qty * price
+    now = datetime.utcnow().isoformat()
+    with _lock:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE traders SET cash = cash - ? WHERE name = ?", (cost, name)
+        )
+        # Upsert position (average in if adding to existing long)
+        existing = conn.execute(
+            "SELECT qty, avg_price FROM trader_positions WHERE trader_name = ? AND ticker = ?",
+            (name, ticker),
+        ).fetchone()
+        if existing:
+            old_qty = existing["qty"]
+            old_avg = existing["avg_price"]
+            new_qty = old_qty + qty
+            new_avg = (old_avg * old_qty + price * qty) / new_qty
+            conn.execute(
+                "UPDATE trader_positions SET qty = ?, avg_price = ? "
+                "WHERE trader_name = ? AND ticker = ?",
+                (new_qty, new_avg, name, ticker),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO trader_positions (trader_name, ticker, qty, avg_price, side, opened_at) "
+                "VALUES (?, ?, ?, ?, 'long', ?)",
+                (name, ticker, qty, price, now),
+            )
+        conn.execute(
+            "INSERT INTO trader_trades (trader_name, ticker, action, quantity, price, total_value, timestamp, pnl) "
+            "VALUES (?, ?, 'BUY', ?, ?, ?, ?, 0.0)",
+            (name, ticker, qty, price, cost, now),
+        )
+        conn.commit()
+        conn.close()
+
+
+def trader_virtual_sell(name: str, ticker: str, qty: float, price: float, pnl: float):
+    proceeds = qty * price
+    now = datetime.utcnow().isoformat()
+    with _lock:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE traders SET cash = cash + ? WHERE name = ?", (proceeds, name)
+        )
+        existing = conn.execute(
+            "SELECT qty FROM trader_positions WHERE trader_name = ? AND ticker = ?",
+            (name, ticker),
+        ).fetchone()
+        if existing:
+            remaining = existing["qty"] - qty
+            if remaining <= 0.0001:
+                conn.execute(
+                    "DELETE FROM trader_positions WHERE trader_name = ? AND ticker = ?",
+                    (name, ticker),
+                )
+            else:
+                conn.execute(
+                    "UPDATE trader_positions SET qty = ? WHERE trader_name = ? AND ticker = ?",
+                    (remaining, name, ticker),
+                )
+        conn.execute(
+            "INSERT INTO trader_trades (trader_name, ticker, action, quantity, price, total_value, timestamp, pnl) "
+            "VALUES (?, ?, 'SELL', ?, ?, ?, ?, ?)",
+            (name, ticker, qty, price, proceeds, now, pnl),
+        )
+        conn.commit()
+        conn.close()
+
+
+def trader_virtual_short(name: str, ticker: str, qty: float, price: float):
+    """Sell borrowed shares: add proceeds to cash, insert short position."""
+    proceeds = qty * price
+    now = datetime.utcnow().isoformat()
+    with _lock:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE traders SET cash = cash + ? WHERE name = ?", (proceeds, name)
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO trader_positions "
+            "(trader_name, ticker, qty, avg_price, side, opened_at) "
+            "VALUES (?, ?, ?, ?, 'short', ?)",
+            (name, ticker, qty, price, now),
+        )
+        conn.execute(
+            "INSERT INTO trader_trades (trader_name, ticker, action, quantity, price, total_value, timestamp, pnl) "
+            "VALUES (?, ?, 'SHORT', ?, ?, ?, ?, 0.0)",
+            (name, ticker, qty, price, proceeds, now),
+        )
+        conn.commit()
+        conn.close()
+
+
+def trader_virtual_cover(name: str, ticker: str, qty: float, price: float, pnl: float):
+    """Buy back shorted shares: deduct buyback cost from cash, close position, record pnl.
+    On short open we added proceeds to cash; on cover we subtract the buyback cost.
+    The net effect is pnl = (entry_price - cover_price) * qty already computed by caller.
+    We adjust cash by pnl (simpler and equivalent when proceeds were already added).
+    """
+    cost = qty * price
+    now = datetime.utcnow().isoformat()
+    with _lock:
+        conn = get_connection()
+        # We already have the short proceeds in cash from the SHORT operation.
+        # Now we pay back the buyback cost. Net cash change = pnl.
+        conn.execute(
+            "UPDATE traders SET cash = cash + ? WHERE name = ?",
+            (pnl, name),
+        )
+        conn.execute(
+            "DELETE FROM trader_positions WHERE trader_name = ? AND ticker = ?",
+            (name, ticker),
+        )
+        conn.execute(
+            "INSERT INTO trader_trades (trader_name, ticker, action, quantity, price, total_value, timestamp, pnl) "
+            "VALUES (?, ?, 'COVER', ?, ?, ?, ?, ?)",
+            (name, ticker, qty, price, cost, now, pnl),
+        )
+        conn.commit()
+        conn.close()
+
+
+def log_trader_decision(trader_name: str, ticker: str, action: str, confidence: float,
+                        sizing: str, reasoning: str, executed: bool = False,
+                        blocked_reason: str = None, rsi: float = None,
+                        macd: float = None, ema20: float = None, ema50: float = None,
+                        current_price: float = None):
+    with _lock:
+        conn = get_connection()
+        conn.execute(
+            """INSERT INTO trader_decisions
+               (trader_name, ticker, action, confidence, sizing, reasoning,
+                timestamp, executed, blocked_reason, rsi, macd, ema20, ema50, current_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (trader_name, ticker, action, confidence, sizing, reasoning,
+             datetime.utcnow().isoformat(), 1 if executed else 0,
+             blocked_reason, rsi, macd, ema20, ema50, current_price),
+        )
+        conn.commit()
+        conn.close()
+
+
+def get_trader_trades(name: str, limit: int = 50) -> list:
+    with _lock:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT * FROM trader_trades WHERE trader_name = ? ORDER BY timestamp DESC LIMIT ?",
+            (name, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+
+def get_trader_decisions(name: str, limit: int = 50) -> list:
+    with _lock:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT * FROM trader_decisions WHERE trader_name = ? ORDER BY timestamp DESC LIMIT ?",
+            (name, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+
+def get_trader_daily_pnl(name: str) -> float:
+    today = datetime.utcnow().date().isoformat()
+    with _lock:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl), 0.0) AS total FROM trader_trades "
+            "WHERE trader_name = ? AND timestamp >= ?",
+            (name, today),
+        ).fetchone()
+        conn.close()
+        return float(row["total"]) if row else 0.0
+
+
+def reset_trader(name: str):
+    with _lock:
+        conn = get_connection()
+        alloc_row = conn.execute(
+            "SELECT allocation FROM traders WHERE name = ?", (name,)
+        ).fetchone()
+        alloc = float(alloc_row["allocation"]) if alloc_row else 10000.0
+        conn.execute(
+            "UPDATE traders SET cash = ?, active = 0 WHERE name = ?", (alloc, name)
+        )
+        conn.execute(
+            "DELETE FROM trader_positions WHERE trader_name = ?", (name,)
+        )
+        conn.execute(
+            "DELETE FROM trader_trades WHERE trader_name = ?", (name,)
+        )
+        conn.execute(
+            "DELETE FROM trader_decisions WHERE trader_name = ?", (name,)
+        )
+        conn.commit()
+        conn.close()
+
+
+def set_trader_active(name: str, active: bool):
+    with _lock:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE traders SET active = ? WHERE name = ?",
+            (1 if active else 0, name),
+        )
+        conn.commit()
+        conn.close()

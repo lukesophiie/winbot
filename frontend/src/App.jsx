@@ -8,6 +8,7 @@ import AgentReasoning from './components/AgentReasoning.jsx'
 import Watchlist from './components/Watchlist.jsx'
 import PerformanceStats from './components/PerformanceStats.jsx'
 import Settings from './components/Settings.jsx'
+import Traders from './components/Traders.jsx'
 
 // In production, VITE_API_URL points to Railway backend (e.g. https://winbot.up.railway.app)
 const BACKEND = import.meta.env.VITE_API_URL || ''
@@ -264,6 +265,7 @@ export default function App() {
             <Route path="/watchlist"   element={<Watchlist       {...shared} />} />
             <Route path="/performance" element={<PerformanceStats {...shared} />} />
             <Route path="/settings"    element={<Settings        {...shared} />} />
+            <Route path="/traders"     element={<Traders         toast={toast} />} />
             <Route path="*"            element={<Navigate to="/" replace />} />
           </Routes>
         </main>

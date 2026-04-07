@@ -1,11 +1,12 @@
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, History, Brain, List,
-  BarChart2, Settings, Zap, ZapOff, Wifi, WifiOff,
+  BarChart2, Settings, Zap, ZapOff, Wifi, WifiOff, Users,
 } from 'lucide-react'
 
 const NAV_LINKS = [
   { to: '/',            icon: LayoutDashboard, label: 'Dashboard'   },
+  { to: '/traders',     icon: Users,           label: 'Traders'     },
   { to: '/trades',      icon: History,          label: 'Trades'      },
   { to: '/reasoning',   icon: Brain,            label: 'AI Log'      },
   { to: '/watchlist',   icon: List,             label: 'Watchlist'   },

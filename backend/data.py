@@ -84,8 +84,10 @@ def _fetch_alpaca(ticker: str, period: str, interval: str) -> pd.DataFrame | Non
     else:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests   import StockBarsRequest
+        from alpaca.data.enums      import DataFeed
         client = StockHistoricalDataClient(key, secret)
-        req    = StockBarsRequest(symbol_or_symbols=ticker, timeframe=tf, start=start, end=end)
+        # Free Alpaca accounts can only access IEX feed, not SIP
+        req    = StockBarsRequest(symbol_or_symbols=ticker, timeframe=tf, start=start, end=end, feed=DataFeed.IEX)
         bars   = client.get_stock_bars(req)
 
     df = bars.df
@@ -176,8 +178,9 @@ def fetch_current_price(ticker: str) -> float:
             else:
                 from alpaca.data.historical import StockHistoricalDataClient
                 from alpaca.data.requests   import LatestStockBarRequest
+                from alpaca.data.enums      import DataFeed
                 client = StockHistoricalDataClient(key, secret)
-                req    = LatestStockBarRequest(symbol_or_symbols=ticker)
+                req    = LatestStockBarRequest(symbol_or_symbols=ticker, feed=DataFeed.IEX)
                 bar    = client.get_stock_latest_bar(req)
                 if bar and ticker in bar:
                     return round(float(bar[ticker].close), 4)

@@ -8,6 +8,11 @@ from threading import Lock
 # On Railway, mount a volume at /data and set DB_PATH=/data/winbot.db
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "winbot.db"))
 
+# Ensure the parent directory exists (important for Railway volume mounts)
+_db_dir = os.path.dirname(DB_PATH)
+if _db_dir:
+    os.makedirs(_db_dir, exist_ok=True)
+
 # Env vars take priority over DB-stored settings (safe for cloud deployments)
 _ENV_MAP = {
     "alpaca_paper_key":    "ALPACA_PAPER_KEY",

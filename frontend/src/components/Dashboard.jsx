@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import {
   TrendingUp, TrendingDown, DollarSign, Activity,
-  Briefcase, Zap, ZapOff, AlertCircle,
+  Briefcase, Zap, ZapOff, AlertCircle, Bug, CheckCircle, XCircle,
 } from 'lucide-react'
 import axios from 'axios'
 
@@ -66,6 +66,21 @@ export default function Dashboard({
 }) {
   const [winRate, setWinRate] = useState(null)
   const [runningNow, setRunningNow] = useState(false)
+  const [diagResult, setDiagResult] = useState(null)
+  const [diagLoading, setDiagLoading] = useState(false)
+
+  const runDiag = async () => {
+    setDiagLoading(true)
+    setDiagResult(null)
+    try {
+      const { data } = await axios.get('/api/debug/analyse?ticker=AAPL')
+      setDiagResult(data)
+    } catch (e) {
+      setDiagResult({ ok: false, error: e.response?.data?.detail || e.message })
+    } finally {
+      setDiagLoading(false)
+    }
+  }
 
   const runNow = async () => {
     setRunningNow(true)
@@ -146,6 +161,55 @@ export default function Dashboard({
           )}
         </div>
       </div>
+
+      {/* ── Diagnostics panel ── */}
+      {trades.length === 0 && (
+        <div className="card p-4 border border-amber-500/20 bg-amber-500/5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-amber-400 text-sm font-medium">
+              <AlertCircle size={15} />
+              No trades yet — run a system check to diagnose
+            </div>
+            <button
+              onClick={runDiag}
+              disabled={diagLoading}
+              className="btn-secondary text-xs"
+            >
+              <Bug size={13} /> {diagLoading ? 'Checking…' : 'Run System Check'}
+            </button>
+          </div>
+
+          {diagResult && (
+            <div className="mt-3 space-y-2 text-xs font-mono">
+              {/* Overall */}
+              <div className={`flex items-center gap-2 font-semibold ${diagResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                {diagResult.ok ? <CheckCircle size={13} /> : <XCircle size={13} />}
+                {diagResult.ok ? 'All systems OK — agent should be trading' : `Failed at: ${diagResult.failed_at}`}
+              </div>
+
+              {/* Steps */}
+              {diagResult.steps && Object.entries(diagResult.steps).map(([step, val]) => (
+                <div key={step} className="flex gap-2 text-slate-400">
+                  <span className="text-slate-500 w-28 shrink-0">{step}:</span>
+                  <span className="text-slate-300 break-all">{typeof val === 'object' ? JSON.stringify(val) : String(val)}</span>
+                </div>
+              ))}
+
+              {/* Error */}
+              {diagResult.error && (
+                <div className="text-red-400 mt-1">Error: {diagResult.error}</div>
+              )}
+
+              {/* Decision preview */}
+              {diagResult.decision && (
+                <div className="mt-2 p-2 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">
+                  Decision: {diagResult.decision.action} (confidence {diagResult.decision.confidence}) — {diagResult.decision.reasoning}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

@@ -327,6 +327,34 @@ async def get_performance():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  Debug endpoint (temporary — remove after diagnosing data issues)
+# ══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/debug/data/{ticker}")
+async def debug_data(ticker: str):
+    import traceback
+    from data import _alpaca_keys, _fetch_alpaca, _fetch_yfinance
+    result = {"ticker": ticker, "alpaca": {}, "yfinance": {}}
+
+    key, secret = _alpaca_keys()
+    result["has_alpaca_keys"] = bool(key and secret)
+    result["key_prefix"] = key[:6] + "…" if key else None
+
+    try:
+        df = _fetch_alpaca(ticker, "5d", "1h")
+        result["alpaca"] = {"ok": df is not None and not df.empty, "rows": len(df) if df is not None else 0}
+    except Exception as e:
+        result["alpaca"] = {"ok": False, "error": str(e), "trace": traceback.format_exc()[-500:]}
+
+    try:
+        df2 = _fetch_yfinance(ticker, "5d", "1h")
+        result["yfinance"] = {"ok": not df2.empty, "rows": len(df2)}
+    except Exception as e:
+        result["yfinance"] = {"ok": False, "error": str(e)}
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Chart data  (OHLCV + indicator series for the frontend chart)
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/chart/{ticker}")

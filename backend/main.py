@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
     logger.info("WinBot backend shutdown")
 
 
-app = FastAPI(title="WinBot API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="WinBot API", version="1.1.0", lifespan=lifespan)
 
 # FRONTEND_URL env var lets you whitelist your Vercel domain in production
 _extra_origin = os.environ.get("FRONTEND_URL", "")
@@ -319,6 +319,73 @@ async def stop_agent():
 @app.get("/api/performance")
 async def get_performance():
     return {"stats": db.get_performance_stats()}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Chart data  (OHLCV + indicator series for the frontend chart)
+# ══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/chart/{ticker}")
+async def get_chart_data(ticker: str, period: str = "5d"):
+    import numpy as np
+    import pandas as pd
+    from data import fetch_ohlcv
+
+    interval = "1d" if period in ("1mo", "3mo") else "1h"
+    df = fetch_ohlcv(ticker, period=period, interval=interval)
+    if df.empty:
+        raise HTTPException(404, f"No data available for {ticker}")
+
+    closes = df["close"].astype(float)
+
+    # EMA series
+    ema20_s = closes.ewm(span=20, adjust=False).mean()
+    ema50_s = closes.ewm(span=50, adjust=False).mean()
+
+    # RSI series
+    delta = closes.diff()
+    avg_gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+    avg_loss = (-delta).clip(lower=0).ewm(com=13, adjust=False).mean()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi_s = (100 - (100 / (1 + rs))).fillna(50)
+
+    # MACD series
+    ema12_s = closes.ewm(span=12, adjust=False).mean()
+    ema26_s = closes.ewm(span=26, adjust=False).mean()
+    macd_s = ema12_s - ema26_s
+    signal_s = macd_s.ewm(span=9, adjust=False).mean()
+    hist_s = macd_s - signal_s
+
+    candles = []
+    for i, (ts, row) in enumerate(df.iterrows()):
+        ts_str = str(ts)[:19]  # trim to seconds, no tz
+        candles.append({
+            "time": ts_str,
+            "open":  round(float(row["open"]),  2),
+            "high":  round(float(row["high"]),  2),
+            "low":   round(float(row["low"]),   2),
+            "close": round(float(row["close"]), 2),
+            "volume": int(row["volume"]) if not pd.isna(row["volume"]) else 0,
+            "ema20":       round(float(ema20_s.iloc[i]),  2),
+            "ema50":       round(float(ema50_s.iloc[i]),  2),
+            "rsi":         round(float(rsi_s.iloc[i]),    1),
+            "macd":        round(float(macd_s.iloc[i]),   4),
+            "macd_signal": round(float(signal_s.iloc[i]), 4),
+            "macd_hist":   round(float(hist_s.iloc[i]),   4),
+        })
+
+    ticker_clean = ticker.replace("/", "")
+    all_trades    = db.get_trades(500)
+    all_decisions = db.get_decisions(500)
+    ticker_trades    = [t for t in all_trades    if t["ticker"] in (ticker, ticker_clean)]
+    ticker_decisions = [d for d in all_decisions if d["ticker"] in (ticker, ticker_clean)]
+
+    return {
+        "ticker":    ticker,
+        "candles":   candles[-200:],
+        "trades":    ticker_trades[:50],
+        "decisions": ticker_decisions[:50],
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════

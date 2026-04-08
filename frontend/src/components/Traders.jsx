@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import {
   TrendingUp, TrendingDown, Play, Square, RotateCcw,
-  ChevronDown, ChevronRight, Trophy, Users,
+  ChevronDown, ChevronRight, Trophy, Users, PlayCircle,
 } from 'lucide-react'
 
 // ── Colour mappings ───────────────────────────────────────────────────────────
@@ -259,18 +259,52 @@ export default function Traders({ toast }) {
     }
   }
 
+  const handleRunAll = async () => {
+    setActionLoading('all')
+    const idle = traders.filter((t) => !t.is_running)
+    if (idle.length === 0) {
+      toast('All traders are already running', 'info')
+      setActionLoading(null)
+      return
+    }
+    let started = 0
+    await Promise.all(
+      idle.map(async (t) => {
+        try {
+          await axios.post(`/api/traders/${t.name}/start`)
+          started++
+        } catch (e) {
+          toast(e.response?.data?.detail || `Failed to start ${t.name}`, 'error')
+        }
+      })
+    )
+    if (started > 0) toast(`Started ${started} trader${started > 1 ? 's' : ''}`, 'success')
+    await fetchTraders()
+    setActionLoading(null)
+  }
+
   const selTrader = selected ? traders.find((t) => t.name === selected.name) : null
   const col = selTrader ? c(selTrader.color) : c('slate')
 
   return (
     <div className="space-y-6">
       {/* ── Header ── */}
-      <div className="flex items-center gap-3">
-        <Users size={22} className="text-cyan-400" />
-        <div>
-          <h1 className="text-xl font-bold text-slate-100">Virtual Traders</h1>
-          <p className="text-sm text-slate-400">5 AI traders competing with $10,000 each</p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Users size={22} className="text-cyan-400" />
+          <div>
+            <h1 className="text-xl font-bold text-slate-100">Virtual Traders</h1>
+            <p className="text-sm text-slate-400">5 AI traders competing with $10,000 each</p>
+          </div>
         </div>
+        <button
+          onClick={handleRunAll}
+          disabled={actionLoading === 'all'}
+          className="btn-primary text-sm"
+        >
+          <PlayCircle size={16} />
+          {actionLoading === 'all' ? 'Starting…' : 'Run All Traders'}
+        </button>
       </div>
 
       {/* ── Leaderboard ── */}

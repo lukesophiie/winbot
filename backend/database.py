@@ -162,6 +162,12 @@ def init_db():
             );
         """)
 
+        # Migration: add follow_mode if not present
+        try:
+            cursor.execute("ALTER TABLE traders ADD COLUMN follow_mode TEXT DEFAULT 'off'")
+        except Exception:
+            pass
+
         _now = datetime.utcnow().isoformat()
         _traders = [
             ("luke",     "Luke",     "🔥", "most aggressive", "Scalper",  "red",    0.50, 15.0, 3.0,  15.0, 5),
@@ -611,6 +617,22 @@ def reset_trader(name: str):
         )
         conn.execute(
             "DELETE FROM trader_decisions WHERE trader_name = ?", (name,)
+        )
+        conn.commit()
+        conn.close()
+
+
+def set_trader_follow(name: str, mode: str):
+    """mode: 'off' | 'paper' | 'live'"""
+    with _lock:
+        conn = get_connection()
+        try:
+            conn.execute("ALTER TABLE traders ADD COLUMN follow_mode TEXT DEFAULT 'off'")
+        except Exception:
+            pass  # column already exists
+        conn.execute(
+            "UPDATE traders SET follow_mode = ? WHERE name = ?",
+            (mode, name),
         )
         conn.commit()
         conn.close()

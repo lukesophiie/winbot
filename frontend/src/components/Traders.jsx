@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import {
   TrendingUp, TrendingDown, Play, Square, RotateCcw,
-  ChevronDown, ChevronRight, Trophy, Users, PlayCircle,
+  ChevronDown, ChevronRight, Trophy, Users, PlayCircle, Radio,
 } from 'lucide-react'
 
 // ── Colour mappings ───────────────────────────────────────────────────────────
@@ -21,6 +21,16 @@ const fmt$ = (n) =>
   (n ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 const fmtPct = (n) => `${(n ?? 0) >= 0 ? '+' : ''}${(n ?? 0).toFixed(2)}%`
+
+const toAEST = (ts) => {
+  if (!ts) return '—'
+  const d = new Date(ts.includes('T') ? ts + (ts.endsWith('Z') ? '' : 'Z') : ts + 'Z')
+  return d.toLocaleString('en-AU', {
+    timeZone: 'Australia/Sydney',
+    day: '2-digit', month: '2-digit', year: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  })
+}
 
 const fmtPnl = (n) => (
   <span className={(n ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}>
@@ -299,6 +309,26 @@ export default function Traders({ toast }) {
     setActionLoading(null)
   }
 
+  const handleFollow = async (name, mode) => {
+    if (mode === 'live') {
+      const ok = window.confirm(
+        '⚠️ LIVE MODE — This will place REAL trades with REAL money on your live Alpaca account.\n\nPosition sizes will be scaled to your real portfolio.\n\nAre you sure?'
+      )
+      if (!ok) return
+    }
+    setActionLoading(name + ':follow')
+    try {
+      await axios.post(`/api/traders/${name}/follow`, { mode })
+      const label = mode === 'off' ? 'unfollowed' : `now following in ${mode.toUpperCase()} mode`
+      toast(`${name} ${label}`, mode === 'live' ? 'trade' : 'success')
+      await fetchTraders()
+    } catch (e) {
+      toast(e.response?.data?.detail || 'Follow failed', 'error')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
   const selTrader = selected ? traders.find((t) => t.name === selected.name) : null
   const col = selTrader ? c(selTrader.color) : c('slate')
 
@@ -418,6 +448,48 @@ export default function Traders({ toast }) {
                     {actionLoading === selTrader.name + ':start' ? 'Starting…' : 'Start'}
                   </button>
                 )}
+                {/* Follow buttons */}
+                {(() => {
+                  const fm = selTrader.follow_mode || 'off'
+                  return fm !== 'off' ? (
+                    <div className="flex items-center gap-2">
+                      <div className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border ${
+                        fm === 'live'
+                          ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
+                          : 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400'
+                      }`}>
+                        <Radio size={13} className="animate-pulse" />
+                        Following ({fm.toUpperCase()})
+                      </div>
+                      <button
+                        onClick={() => handleFollow(selTrader.name, 'off')}
+                        disabled={!!actionLoading}
+                        className="px-3 py-2 rounded-lg bg-slate-700/50 hover:bg-slate-600/50 text-slate-400 border border-slate-600/40 text-sm transition-all"
+                      >
+                        Unfollow
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handleFollow(selTrader.name, 'paper')}
+                        disabled={!!actionLoading}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/25 text-sm transition-all"
+                        title="Mirror this trader's signals to your paper Alpaca account"
+                      >
+                        <Radio size={13} /> Follow (Paper)
+                      </button>
+                      <button
+                        onClick={() => handleFollow(selTrader.name, 'live')}
+                        disabled={!!actionLoading}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/25 text-sm transition-all"
+                        title="Mirror this trader's signals to your LIVE Alpaca account with real money"
+                      >
+                        <Radio size={13} /> Follow (Live 💰)
+                      </button>
+                    </div>
+                  )
+                })()}
                 <button
                   onClick={() => handleReset(selTrader.name)}
                   disabled={selTrader.is_running || actionLoading === selTrader.name + ':reset'}
@@ -476,8 +548,8 @@ export default function Traders({ toast }) {
                           <th className="px-4 py-2.5 text-left">Ticker</th>
                           <th className="px-4 py-2.5 text-left">Side</th>
                           <th className="px-4 py-2.5 text-right">Qty</th>
-                          <th className="px-4 py-2.5 text-right">Avg Price</th>
-                          <th className="px-4 py-2.5 text-right">Current</th>
+                          <th className="px-4 py-2.5 text-right">Buy Price</th>
+                          <th className="px-4 py-2.5 text-right">Current Price</th>
                           <th className="px-4 py-2.5 text-right">Value</th>
                           <th className="px-4 py-2.5 text-right">Unrealized P&amp;L</th>
                         </tr>
@@ -498,10 +570,10 @@ export default function Traders({ toast }) {
                             <td className="px-4 py-2.5 text-right font-mono text-slate-300">
                               {pos.qty?.toFixed(4)}
                             </td>
-                            <td className="px-4 py-2.5 text-right font-mono text-slate-400">
+                            <td className="px-4 py-2.5 text-right font-mono text-emerald-400">
                               {fmt$(pos.avg_price)}
                             </td>
-                            <td className="px-4 py-2.5 text-right font-mono text-slate-300">
+                            <td className="px-4 py-2.5 text-right font-mono text-cyan-300">
                               {fmt$(pos.current_price)}
                             </td>
                             <td className="px-4 py-2.5 text-right font-mono text-slate-300">
@@ -528,12 +600,12 @@ export default function Traders({ toast }) {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-slate-700/40 text-xs text-slate-500 uppercase tracking-wider">
-                          <th className="px-4 py-2.5 text-left">Time</th>
+                          <th className="px-4 py-2.5 text-left">Time (AEST)</th>
                           <th className="px-4 py-2.5 text-left">Ticker</th>
                           <th className="px-4 py-2.5 text-left">Action</th>
                           <th className="px-4 py-2.5 text-right">Qty</th>
-                          <th className="px-4 py-2.5 text-right">Price</th>
-                          <th className="px-4 py-2.5 text-right">Total</th>
+                          <th className="px-4 py-2.5 text-right">Buy Price</th>
+                          <th className="px-4 py-2.5 text-right">Sell Price</th>
                           <th className="px-4 py-2.5 text-right">P&amp;L</th>
                         </tr>
                       </thead>
@@ -546,10 +618,11 @@ export default function Traders({ toast }) {
                             COVER: 'bg-blue-500/10 text-blue-400',
                           }
                           const ac = actionColors[tr.action] || 'bg-slate-500/10 text-slate-400'
+                          const isBuy = tr.action === 'BUY' || tr.action === 'COVER'
                           return (
                             <tr key={tr.id} className="hover:bg-slate-700/20">
-                              <td className="px-4 py-2.5 text-xs text-slate-500 font-mono">
-                                {tr.timestamp?.slice(0, 16).replace('T', ' ')}
+                              <td className="px-4 py-2.5 text-xs text-slate-500 font-mono whitespace-nowrap">
+                                {toAEST(tr.timestamp)}
                               </td>
                               <td className="px-4 py-2.5 font-semibold text-slate-200">{tr.ticker}</td>
                               <td className="px-4 py-2.5">
@@ -560,14 +633,14 @@ export default function Traders({ toast }) {
                               <td className="px-4 py-2.5 text-right font-mono text-slate-300">
                                 {tr.quantity?.toFixed(4)}
                               </td>
-                              <td className="px-4 py-2.5 text-right font-mono text-slate-400">
-                                {fmt$(tr.price)}
+                              <td className="px-4 py-2.5 text-right font-mono text-emerald-400">
+                                {isBuy ? fmt$(tr.price) : <span className="text-slate-600">—</span>}
                               </td>
-                              <td className="px-4 py-2.5 text-right font-mono text-slate-300">
-                                {fmt$(tr.total_value)}
+                              <td className="px-4 py-2.5 text-right font-mono text-red-400">
+                                {!isBuy ? fmt$(tr.price) : <span className="text-slate-600">—</span>}
                               </td>
                               <td className="px-4 py-2.5 text-right font-mono">
-                                {tr.pnl ? fmtPnl(tr.pnl) : <span className="text-slate-600">—</span>}
+                                {tr.pnl != null && tr.pnl !== 0 ? fmtPnl(tr.pnl) : <span className="text-slate-600">—</span>}
                               </td>
                             </tr>
                           )

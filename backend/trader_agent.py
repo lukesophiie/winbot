@@ -25,6 +25,20 @@ class TraderAgent:
         self._broadcast = broadcast
         self.running = False
         self.last_error: Optional[str] = None
+        self.follow_mode: str = trader.get("follow_mode") or "off"
+
+    def _real_broker(self):
+        """Return a live or paper broker when following mode is active."""
+        from broker import AlpacaBroker
+        import database as _db
+        if self.follow_mode == "live":
+            key    = _db.get_setting("alpaca_live_key")    or ""
+            secret = _db.get_setting("alpaca_live_secret") or ""
+            return AlpacaBroker(key, secret, paper=False)
+        else:  # paper
+            key    = _db.get_setting("alpaca_paper_key")    or ""
+            secret = _db.get_setting("alpaca_paper_secret") or ""
+            return AlpacaBroker(key, secret, paper=True)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -395,6 +409,40 @@ sizing    : small=25%, medium=50%, large=100% of max position size — scale up 
         logger.info(
             f"[trader:{self.name}] EXECUTED {action} {qty:.4f} {ticker} @ ${price:.4f}"
         )
+
+        # ── Mirror to real Alpaca account if following ────────────────────────
+        if self.follow_mode in ("paper", "live"):
+            try:
+                broker = self._real_broker()
+                if broker.is_connected():
+                    real_account = broker.get_account()
+                    real_pv = float(real_account.get("portfolio_value") or 0)
+                    virtual_allocation = float(self.trader["allocation"])
+                    # Scale qty proportionally to real portfolio size
+                    scale = real_pv / virtual_allocation if virtual_allocation > 0 else 1.0
+                    real_qty = round(qty * scale, 4)
+                    if real_qty > 0:
+                        order_side = "buy" if action in ("BUY", "COVER") else "sell"
+                        order = broker.place_market_order(ticker, order_side, real_qty)
+                        logger.info(
+                            f"[trader:{self.name}] REAL {order_side.upper()} "
+                            f"{real_qty:.4f} {ticker} (scale={scale:.2f}x) — "
+                            f"order={'ok' if order else 'failed'}"
+                        )
+                        await self._emit({
+                            "type": "trader_real_trade",
+                            "data": {
+                                "trader": self.name,
+                                "ticker": ticker,
+                                "action": action,
+                                "quantity": real_qty,
+                                "follow_mode": self.follow_mode,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            },
+                        })
+            except Exception as e:
+                logger.error(f"[trader:{self.name}] Real order failed: {e}")
+
         await self._emit({
             "type": "trader_trade",
             "data": {

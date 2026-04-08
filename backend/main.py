@@ -627,6 +627,27 @@ async def get_trader_detail(name: str):
     }
 
 
+class FollowBody(BaseModel):
+    mode: str  # "off" | "paper" | "live"
+
+@app.post("/api/traders/{name}/follow")
+async def set_trader_follow(name: str, body: FollowBody):
+    if body.mode not in ("off", "paper", "live"):
+        raise HTTPException(400, "mode must be 'off', 'paper', or 'live'")
+    t = db.get_trader(name)
+    if not t:
+        raise HTTPException(404, f"Trader '{name}' not found")
+    if body.mode == "live":
+        if not db.get_setting("alpaca_live_key") or not db.get_setting("alpaca_live_secret"):
+            raise HTTPException(400, "Live Alpaca keys not configured in Settings")
+    db.set_trader_follow(name, body.mode)
+    # Update running agent if active
+    if name in _trader_agents:
+        _trader_agents[name].follow_mode = body.mode
+    logger.info(f"Trader {name} follow_mode set to {body.mode}")
+    return {"status": "ok", "follow_mode": body.mode}
+
+
 @app.post("/api/traders/{name}/run-now")
 async def run_trader_now(name: str):
     """Trigger an immediate cycle for a trader."""

@@ -420,8 +420,9 @@ sizing    : small=25%, medium=50%, large=100% of max position size — scale up 
                     virtual_allocation = float(self.trader["allocation"])
                     # Scale qty proportionally to real portfolio size
                     scale = real_pv / virtual_allocation if virtual_allocation > 0 else 1.0
-                    real_qty = round(qty * scale, 4)
-                    if real_qty > 0:
+                    real_qty = round(qty * scale, 6)
+                    real_notional = real_qty * price
+                    if real_qty > 0 and real_notional >= 1.0:  # Alpaca $1 minimum
                         order_side = "buy" if action in ("BUY", "COVER") else "sell"
                         order = broker.place_market_order(ticker, order_side, real_qty)
                         logger.info(

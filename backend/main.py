@@ -715,7 +715,8 @@ async def stop_trader(name: str):
 
 @app.post("/api/traders/reset-all")
 async def reset_all_traders():
-    """Reset all traders to their starting allocation — clears corrupted data."""
+    """Reset all traders to their starting allocation then restart them."""
+    # Stop running agents
     for name, ta in list(_trader_agents.items()):
         ta.stop()
         if name in _trader_tasks:
@@ -726,10 +727,25 @@ async def reset_all_traders():
                 pass
             del _trader_tasks[name]
         del _trader_agents[name]
+
+    # Reset DB
     for t in db.get_traders():
         db.reset_trader(t["name"])
-    logger.info("All traders reset")
-    return {"status": "all_reset"}
+
+    # Restart all traders
+    from trader_agent import TraderAgent as TA
+    restarted = 0
+    for t in db.get_traders():
+        try:
+            ta = TA(t, broadcast=broadcast)
+            _trader_agents[t["name"]] = ta
+            _trader_tasks[t["name"]] = asyncio.create_task(ta.run())
+            restarted += 1
+        except Exception as e:
+            logger.error(f"Trader {t['name']} restart after reset failed: {e}")
+
+    logger.info(f"All traders reset and {restarted} restarted")
+    return {"status": "reset_and_restarted", "restarted": restarted}
 
 
 @app.post("/api/traders/{name}/reset")

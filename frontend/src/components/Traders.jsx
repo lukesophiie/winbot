@@ -270,11 +270,11 @@ export default function Traders({ toast }) {
   }
 
   const handleResetAll = async () => {
-    if (!window.confirm('Reset ALL traders? This clears all trades, positions and resets each to $10,000.')) return
+    if (!window.confirm('Reset ALL traders? This clears all trades and positions, resets each to $10,000, and restarts them immediately.')) return
     setActionLoading('reset-all')
     try {
       await axios.post('/api/traders/reset-all')
-      toast('All traders reset to $10,000', 'success')
+      toast('All traders reset to $10,000 and restarted', 'success')
       await fetchTraders()
       setSelected(null)
       setDetail(null)

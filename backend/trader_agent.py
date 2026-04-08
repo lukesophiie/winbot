@@ -560,11 +560,17 @@ sizing    : small=25%, medium=50%, large=100% of max position size — scale up 
             },
         })
 
-        interval = int(self.trader.get("trading_interval", 5))
-
         while self.running:
             try:
                 await self.run_cycle()
+                # Use 1-min cycle if watchlist has crypto, else use trader's interval
+                watchlist_raw = db.get_setting("watchlist") or "[]"
+                try:
+                    wl = json.loads(watchlist_raw)
+                except Exception:
+                    wl = []
+                has_crypto = any("/" in t for t in wl)
+                interval = 1 if has_crypto else int(self.trader.get("trading_interval", 5))
                 logger.info(
                     f"[trader:{self.name}] Cycle done. Sleeping {interval}m …"
                 )

@@ -96,7 +96,7 @@ def init_db():
             "max_open_trades": "5",
             "daily_loss_limit_pct": "5.0",
             "min_confidence": "0.7",
-            "watchlist": '["AAPL", "TSLA", "NVDA"]',
+            "watchlist": '["BTC/USD", "ETH/USD", "AAPL", "TSLA", "NVDA"]',
         }
         for key, value in defaults.items():
             cursor.execute(

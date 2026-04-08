@@ -777,7 +777,7 @@ async def debug_analyse(ticker: str = "AAPL"):
         prompt = agent_tmp._build_prompt(ticker, ind, position, account, positions)
 
         resp = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-3-5-sonnet-20241022",
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )

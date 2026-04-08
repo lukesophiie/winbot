@@ -189,6 +189,26 @@ def init_db():
                  conf, pos_pct, sl_pct, dl_pct, interval, _now),
             )
 
+        # Migration: ensure BTC/USD and ETH/USD are in the watchlist
+        # (INSERT OR IGNORE means old DBs won't have gotten the updated default)
+        try:
+            wl_row = cursor.execute("SELECT value FROM settings WHERE key = 'watchlist'").fetchone()
+            if wl_row:
+                import json as _json
+                wl = _json.loads(wl_row["value"])
+                changed = False
+                for crypto in ("BTC/USD", "ETH/USD"):
+                    if crypto not in wl:
+                        wl.insert(0, crypto)
+                        changed = True
+                if changed:
+                    cursor.execute(
+                        "UPDATE settings SET value = ? WHERE key = 'watchlist'",
+                        (_json.dumps(wl),),
+                    )
+        except Exception:
+            pass
+
         conn.commit()
         conn.close()
 
@@ -365,13 +385,15 @@ def get_traders() -> list:
         for r in rows:
             t = dict(r)
             # Trade count and win rate
-            trades_rows = conn.execute(
-                "SELECT pnl FROM trader_trades WHERE trader_name = ?", (t["name"],)
+            all_trades_rows = conn.execute(
+                "SELECT action, pnl FROM trader_trades WHERE trader_name = ?", (t["name"],)
             ).fetchall()
-            pnls = [tr["pnl"] for tr in trades_rows]
+            # Only SELL/COVER trades have real P&L (BUY/SHORT pnl is always 0)
+            closed_rows = [tr for tr in all_trades_rows if tr["action"] in ("SELL", "COVER")]
+            pnls = [tr["pnl"] for tr in closed_rows if tr["pnl"] is not None]
             winning = [p for p in pnls if p > 0]
             losing  = [p for p in pnls if p < 0]
-            t["total_trades"]   = len(pnls)
+            t["total_trades"]   = len(all_trades_rows)
             t["winning_trades"] = len(winning)
             t["losing_trades"]  = len(losing)
             t["win_rate"]       = round(len(winning) / len(pnls) * 100, 1) if pnls else 0.0

@@ -14,7 +14,7 @@ from risk import RiskManager
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-5"
+MODEL = "claude-sonnet-4-6"
 
 
 class TradingAgent:

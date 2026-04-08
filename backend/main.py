@@ -560,9 +560,14 @@ async def get_traders():
         for ticker, pos in positions.items():
             try:
                 price = fetch_current_price(ticker)
-                positions_value += pos["qty"] * (price if price > 0 else pos["avg_price"])
+                p = price if price > 0 else pos["avg_price"]
             except Exception:
-                positions_value += pos["qty"] * pos["avg_price"]
+                p = pos["avg_price"]
+            # Long = asset (add), Short = liability already in cash (subtract)
+            if pos["side"] == "short":
+                positions_value -= pos["qty"] * p
+            else:
+                positions_value += pos["qty"] * p
         portfolio_value = cash + positions_value
         allocation = float(t["allocation"])
         pnl = portfolio_value - allocation
@@ -605,13 +610,19 @@ async def get_trader_detail(name: str):
             "live_value": round(live_value, 2),
             "unrealized_pnl": round(pnl_pos, 2),
         }
-        positions_value += live_value
+        # Long = asset (add), Short = liability already in cash (subtract)
+        if pos["side"] == "short":
+            positions_value -= live_value
+        else:
+            positions_value += live_value
     portfolio_value = cash + positions_value
     allocation = float(t["allocation"])
     pnl = portfolio_value - allocation
     pnl_pct = (pnl / allocation * 100) if allocation > 0 else 0.0
     all_trades = db.get_trader_trades(name, limit=10000)
-    trade_pnls = [tr["pnl"] for tr in all_trades if tr.get("pnl") is not None]
+    # Only SELL/COVER trades represent closed positions with real P&L
+    closed_trades = [tr for tr in all_trades if tr["action"] in ("SELL", "COVER")]
+    trade_pnls = [tr["pnl"] for tr in closed_trades if tr.get("pnl") is not None]
     winning = [p for p in trade_pnls if p > 0]
     return {
         **t,
@@ -622,8 +633,10 @@ async def get_trader_detail(name: str):
         "is_running": name in _trader_agents and _trader_agents[name].running,
         "positions": positions_with_prices,
         "total_trades": len(all_trades),
+        "closed_trades": len(closed_trades),
         "winning_trades": len(winning),
-        "win_rate": round(len(winning) / len(all_trades) * 100, 1) if all_trades else 0.0,
+        "losing_trades": len([p for p in trade_pnls if p < 0]),
+        "win_rate": round(len(winning) / len(closed_trades) * 100, 1) if closed_trades else 0.0,
     }
 
 

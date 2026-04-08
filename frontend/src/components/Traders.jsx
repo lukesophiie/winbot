@@ -526,7 +526,7 @@ export default function Traders({ toast }) {
                 <StatCard
                   label="Win Rate"
                   value={`${(detail.win_rate ?? 0).toFixed(1)}%`}
-                  sub={`${detail.winning_trades ?? 0}W / ${(detail.total_trades ?? 0) - (detail.winning_trades ?? 0)}L`}
+                  sub={`${detail.winning_trades ?? 0}W / ${detail.losing_trades ?? 0}L`}
                 />
                 <StatCard
                   label="Total Trades"

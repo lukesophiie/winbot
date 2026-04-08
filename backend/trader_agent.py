@@ -41,7 +41,62 @@ class TraderAgent:
             raise ValueError("Claude API key not configured")
         return anthropic.Anthropic(api_key=key)
 
-    # ── Prompt ────────────────────────────────────────────────────────────────
+    # ── Crypto scalping prompt ────────────────────────────────────────────────
+
+    def _build_scalping_prompt(self, ticker: str, ind: dict, positions: dict, cash: float) -> str:
+        t = self.trader
+        position = positions.get(ticker)
+        if position:
+            pos_info = f"OPEN {position['side'].upper()}: {position['qty']:.4f} units @ avg ${position['avg_price']:.4f}"
+        else:
+            pos_info = "No current position."
+
+        allocation = float(t["allocation"])
+        portfolio_value = cash + sum(pos["qty"] * pos["avg_price"] for pos in positions.values())
+        pnl = portfolio_value - allocation
+
+        pa = ind.get("price_action", [])
+        pa_lines = "\n".join(
+            f"  [{i+1}] O={c['open']} H={c['high']} L={c['low']} C={c['close']} V={c['volume']:,}"
+            for i, c in enumerate(pa)
+        )
+
+        return f"""You are {t['display_name']} {t['emoji']}, a crypto scalper. Your ONLY goal is to make many small profitable trades.
+
+═══ CRYPTO SCALP — 5-MIN CANDLES ═══
+Ticker  : {ticker}
+Price   : ${ind['current_price']:.4f}
+RSI     : {ind['rsi']:.2f}
+MACD H  : {ind['macd']['histogram']:+.6f}
+EMA20   : ${ind['ema20']:.4f}
+EMA50   : ${ind['ema50']:.4f}
+Vol Ratio: {ind['volume_ratio']:.2f}x
+P&L     : ${pnl:+.2f}
+
+═══ LAST 10 CANDLES ═══
+{pa_lines}
+
+═══ POSITION ═══
+{pos_info}
+
+═══ SCALPING RULES — READ CAREFULLY ═══
+You trade aggressively. Crypto is 24/7 and always has opportunity.
+
+IF NO POSITION:
+- BUY if: MACD histogram is positive OR RSI < 45 OR price is at/above EMA20 with volume > 1.0x
+- Only HOLD if MACD is negative AND RSI is between 50-65 AND price is clearly falling
+
+IF LONG POSITION:
+- SELL if: MACD histogram turned negative OR RSI > 55 OR price dropped below EMA20
+- SELL to lock in any profit — don't wait for perfect conditions
+- HOLD only if position is profitable AND all indicators still bullish
+
+IMPORTANT: You should find a reason to BUY or SELL in most cycles. Only HOLD if there is truly no signal.
+Confidence 0.60 is enough to act. Do not be paralysed by uncertainty.
+
+Return ONLY JSON: {{"action":"BUY|SELL|HOLD","confidence":0.0-1.0,"sizing":"small|medium|large","reasoning":"1 sentence"}}"""
+
+    # ── Regular prompt ────────────────────────────────────────────────────────
 
     def _build_prompt(self, ticker: str, ind: dict, positions: dict, cash: float) -> str:
         t = self.trader
@@ -130,19 +185,24 @@ sizing    : small=25%, medium=50%, large=100% of max position size — scale up 
     # ── Analysis ──────────────────────────────────────────────────────────────
 
     async def analyse(self, ticker: str) -> Optional[dict]:
-        logger.info(f"[trader:{self.name}] Analysing {ticker} …")
+        is_crypto = "/" in ticker
+        logger.info(f"[trader:{self.name}] Analysing {ticker} {'(scalp)' if is_crypto else ''}…")
         try:
             df = pd.DataFrame()
-            for period in ("30d", "14d", "7d"):
-                df = fetch_ohlcv(ticker, period=period, interval="1h")
-                if not df.empty and len(df) >= 52:
-                    break
-                logger.warning(
-                    f"[trader:{self.name}] {ticker}: only {len(df)} candles for "
-                    f"period={period}, trying shorter"
-                )
+            if is_crypto:
+                for period in ("2d", "1d"):
+                    df = fetch_ohlcv(ticker, period=period, interval="5m")
+                    if not df.empty and len(df) >= 26:
+                        break
+                min_candles = 26
+            else:
+                for period in ("30d", "14d", "7d"):
+                    df = fetch_ohlcv(ticker, period=period, interval="1h")
+                    if not df.empty and len(df) >= 52:
+                        break
+                min_candles = 52
 
-            if df.empty or len(df) < 52:
+            if df.empty or len(df) < min_candles:
                 logger.warning(
                     f"[trader:{self.name}] Insufficient data for {ticker} "
                     f"({len(df)} candles) — skipping"
@@ -153,7 +213,10 @@ sizing    : small=25%, medium=50%, large=100% of max position size — scale up 
             positions = db.get_trader_positions(self.name)
             cash = db.get_trader_cash(self.name)
 
-            prompt = self._build_prompt(ticker, ind, positions, cash)
+            if is_crypto:
+                prompt = self._build_scalping_prompt(ticker, ind, positions, cash)
+            else:
+                prompt = self._build_prompt(ticker, ind, positions, cash)
             client = self._claude()
 
             resp = client.messages.create(

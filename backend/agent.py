@@ -171,25 +171,26 @@ Volume Ratio  : {ind['volume_ratio']:.2f}x  [>1.2 = elevated, confirms move]
 Portfolio Value : ${pv:,.2f}
 Open Positions  : {len(positions)}/{max_trades}
 
-═══ SCALPING RULES ═══
-- You are looking for SHORT-TERM momentum moves of 0.2%–1.0%
-- BUY when: RSI < 35 OR MACD histogram just turned positive (crossing up) OR price bouncing off EMA20 with volume > 1.2x
-- SELL when: RSI > 65 OR MACD histogram just turned negative (crossing down) OR price extended far above EMA20
-- Crypto trades 24/7 — volume > 0 is sufficient to trade
-- If already in a LONG position and RSI > 60 or MACD turns negative → SELL to lock in profit
-- If no position and momentum is clear → BUY aggressively (confidence ≥ 0.60 is enough)
-- Do NOT HOLD if there is any clear directional signal — scalpers act decisively
-- HOLD only if signals are completely flat/contradictory
+═══ SCALPING RULES — BE DECISIVE ═══
+Crypto trades 24/7. You should find a reason to act in most cycles.
+
+IF NO POSITION:
+- BUY if MACD histogram is positive, OR RSI < 45, OR price >= EMA20 with volume >= 1.0x
+- HOLD only if MACD is negative AND RSI is between 50-65 AND price is clearly falling
+
+IF LONG POSITION:
+- SELL if MACD histogram turned negative, OR RSI > 55, OR price dropped below EMA20
+- SELL to lock in any gain — do not wait for perfect overbought conditions
+- HOLD only if all indicators still strongly bullish
+
+Confidence 0.60 is enough to act. Do NOT be paralysed by uncertainty.
+HOLD should be rare — only when signals are truly flat in all directions.
 
 ═══ VALID ACTIONS ═══
-- BUY   : Enter LONG (no position exists)
-- SELL  : Exit LONG (you hold a LONG position)
-- HOLD  : Signals are flat — no edge right now
+BUY: Enter long | SELL: Exit long | HOLD: No signal at all
 
-Return ONLY a JSON object:
-{{"action": "BUY|SELL|HOLD", "confidence": 0.0-1.0, "sizing": "small|medium|large", "reasoning": "1-2 sentences citing specific values"}}
-
-sizing: small=25%, medium=50%, large=100% of max position size"""
+Return ONLY JSON: {{"action":"BUY|SELL|HOLD","confidence":0.0-1.0,"sizing":"small|medium|large","reasoning":"1 sentence"}}
+sizing: small=25%, medium=50%, large=100% of max position"""
 
     # ── Analysis ──────────────────────────────────────────────────────────────
 

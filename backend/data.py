@@ -17,16 +17,17 @@ def _alpaca_keys():
 
 
 def _interval_to_alpaca_tf(interval: str):
-    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     mapping = {
-        "1m":  TimeFrame.Minute,
-        "5m":  TimeFrame.Minute,
-        "15m": TimeFrame.Minute,
-        "30m": TimeFrame.Minute,
-        "1h":  TimeFrame.Hour,
-        "1d":  TimeFrame.Day,
+        "1m":  (1,  TimeFrameUnit.Minute),
+        "5m":  (5,  TimeFrameUnit.Minute),
+        "15m": (15, TimeFrameUnit.Minute),
+        "30m": (30, TimeFrameUnit.Minute),
+        "1h":  (1,  TimeFrameUnit.Hour),
+        "1d":  (1,  TimeFrameUnit.Day),
     }
-    return mapping.get(interval, TimeFrame.Hour)
+    mult, unit = mapping.get(interval, (1, TimeFrameUnit.Hour))
+    return TimeFrame(mult, unit)
 
 
 def _period_to_days(period: str) -> int:

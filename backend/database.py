@@ -90,6 +90,7 @@ def init_db():
             "claude_api_key": "",
             "trading_mode": "paper",
             "trading_interval": "5",
+            "crypto_interval": "1",
             "stop_loss_pct": "2.0",
             "max_position_size_pct": "10.0",
             "max_open_trades": "5",

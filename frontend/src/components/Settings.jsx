@@ -244,19 +244,19 @@ export default function Settings({ toast, agentRunning }) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             <label className="block text-xs font-medium text-slate-400 mb-1.5">
-              Trading Interval (minutes)
+              Crypto Scalp Interval (minutes)
             </label>
             <select
-              name="trading_interval"
-              value={g('trading_interval') || '5'}
+              name="crypto_interval"
+              value={g('crypto_interval') || '1'}
               onChange={handleChange}
               className="input"
             >
-              {[1, 2, 5, 10, 15, 30, 60].map((v) => (
+              {[1, 2, 3, 5].map((v) => (
                 <option key={v} value={v}>{v} {v === 1 ? 'minute' : 'minutes'}</option>
               ))}
             </select>
-            <p className="text-xs text-slate-600 mt-1">How often Claude analyses the watchlist</p>
+            <p className="text-xs text-slate-600 mt-1">How often crypto is scalped (stocks run every 5th cycle)</p>
           </div>
 
           <RangeField

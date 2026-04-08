@@ -24,6 +24,7 @@ class TradingAgent:
         self.risk = RiskManager()
         self.running = False
         self.last_error: Optional[str] = None
+        self._stock_cycle = 0   # used to run stocks less frequently than crypto
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -119,21 +120,99 @@ Return ONLY a JSON object — no markdown, no explanation outside the JSON:
 confidence: your probability estimate this trade is profitable (0.0–1.0). Must be ≥ 0.70 to execute.
 sizing    : small=25%, medium=50%, large=100% of max position size — scale up for stronger signals"""
 
+    # ── Crypto scalping prompt ────────────────────────────────────────────────
+
+    def _build_scalping_prompt(self, ticker: str, ind: dict, position: Optional[dict],
+                               account: dict, positions: list) -> str:
+        pv = account.get("portfolio_value", 0)
+        max_trades = int(db.get_setting("max_open_trades") or 5)
+
+        if position:
+            side_label = position['side'].upper()
+            pos_info = (
+                f"OPEN {side_label} position: "
+                f"{position['quantity']:.4f} units @ avg ${position['avg_entry_price']:.4f} | "
+                f"Unrealised P&L: ${position['unrealized_pl']:.2f} "
+                f"({position['unrealized_plpc']:.2f}%)"
+            )
+        else:
+            pos_info = "No current position."
+
+        pa = ind.get("price_action", [])
+        pa_lines = "\n".join(
+            f"  [{i+1}] O={c['open']} H={c['high']} L={c['low']} C={c['close']} V={c['volume']:,}"
+            for i, c in enumerate(pa)
+        )
+
+        return f"""You are WinBot, a high-frequency crypto scalping AI. Your goal is to capture small, rapid price moves.
+
+═══ CRYPTO SCALP SNAPSHOT (5-min candles) ═══
+Ticker        : {ticker}
+Timestamp     : {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
+Current Price : ${ind['current_price']:.4f}
+1h Change     : {ind.get('pct_change_1h', 0):+.2f}%
+
+═══ INDICATORS ═══
+RSI (14)      : {ind['rsi']:.2f}  [<35 oversold | >65 overbought for scalping]
+MACD Histogram: {ind['macd']['histogram']:+.6f}  [positive=bullish momentum]
+MACD Line     : {ind['macd']['macd']:+.6f}
+Signal Line   : {ind['macd']['signal']:+.6f}
+EMA 20        : ${ind['ema20']:.4f}
+EMA 50        : ${ind['ema50']:.4f}
+Volume Ratio  : {ind['volume_ratio']:.2f}x  [>1.2 = elevated, confirms move]
+
+═══ RECENT 5-MIN PRICE ACTION (last 10 candles) ═══
+{pa_lines}
+
+═══ POSITION STATUS ═══
+{pos_info}
+
+═══ PORTFOLIO CONTEXT ═══
+Portfolio Value : ${pv:,.2f}
+Open Positions  : {len(positions)}/{max_trades}
+
+═══ SCALPING RULES ═══
+- You are looking for SHORT-TERM momentum moves of 0.2%–1.0%
+- BUY when: RSI < 35 OR MACD histogram just turned positive (crossing up) OR price bouncing off EMA20 with volume > 1.2x
+- SELL when: RSI > 65 OR MACD histogram just turned negative (crossing down) OR price extended far above EMA20
+- Crypto trades 24/7 — volume > 0 is sufficient to trade
+- If already in a LONG position and RSI > 60 or MACD turns negative → SELL to lock in profit
+- If no position and momentum is clear → BUY aggressively (confidence ≥ 0.60 is enough)
+- Do NOT HOLD if there is any clear directional signal — scalpers act decisively
+- HOLD only if signals are completely flat/contradictory
+
+═══ VALID ACTIONS ═══
+- BUY   : Enter LONG (no position exists)
+- SELL  : Exit LONG (you hold a LONG position)
+- HOLD  : Signals are flat — no edge right now
+
+Return ONLY a JSON object:
+{{"action": "BUY|SELL|HOLD", "confidence": 0.0-1.0, "sizing": "small|medium|large", "reasoning": "1-2 sentences citing specific values"}}
+
+sizing: small=25%, medium=50%, large=100% of max position size"""
+
     # ── Analysis ──────────────────────────────────────────────────────────────
 
-    async def analyse(self, ticker: str) -> Optional[dict]:
-        logger.info(f"[agent] Analysing {ticker} …")
+    async def analyse(self, ticker: str, scalping: bool = False) -> Optional[dict]:
+        logger.info(f"[agent] Analysing {ticker} {'(scalp)' if scalping else ''}…")
         try:
-            # Try progressively shorter periods until we have enough candles.
-            # Alpaca's free IEX feed has limited historical depth.
-            df = pd.DataFrame()
-            for period in ("60d", "30d", "14d", "7d"):
-                df = fetch_ohlcv(ticker, period=period, interval="1h")
-                if not df.empty and len(df) >= 52:
-                    break
-                logger.warning(f"[agent] {ticker}: only {len(df)} candles for period={period}, trying shorter")
+            if scalping:
+                # 5-minute candles for crypto — only need last 2 days
+                df = pd.DataFrame()
+                for period in ("2d", "1d"):
+                    df = fetch_ohlcv(ticker, period=period, interval="5m")
+                    if not df.empty and len(df) >= 26:
+                        break
+                min_candles = 26
+            else:
+                df = pd.DataFrame()
+                for period in ("60d", "30d", "14d", "7d"):
+                    df = fetch_ohlcv(ticker, period=period, interval="1h")
+                    if not df.empty and len(df) >= 52:
+                        break
+                min_candles = 52
 
-            if df.empty or len(df) < 52:
+            if df.empty or len(df) < min_candles:
                 logger.warning(f"[agent] Insufficient data for {ticker} ({len(df)} candles) — skipping")
                 return None
 
@@ -142,7 +221,10 @@ sizing    : small=25%, medium=50%, large=100% of max position size — scale up 
             positions = self.broker.get_positions()
             position = self.broker.get_position(ticker)
 
-            prompt = self._build_prompt(ticker, ind, position, account, positions)
+            if scalping:
+                prompt = self._build_scalping_prompt(ticker, ind, position, account, positions)
+            else:
+                prompt = self._build_prompt(ticker, ind, position, account, positions)
             client = self._claude()
 
             resp = client.messages.create(
@@ -311,16 +393,36 @@ sizing    : small=25%, medium=50%, large=100% of max position size — scale up 
             logger.info("[agent] Watchlist empty — skipping cycle")
             return
 
-        logger.info(f"[agent] Starting cycle ({len(watchlist)} tickers)")
+        crypto  = [t for t in watchlist if "/" in t]
+        stocks  = [t for t in watchlist if "/" not in t]
+
         await self.check_stop_losses()
 
-        for ticker in watchlist:
-            if not self.running:
-                break
-            analysis = await self.analyse(ticker)
-            if analysis:
-                await self.execute(ticker, analysis)
-            await asyncio.sleep(2)  # brief rate-limit pause between tickers
+        # ── Crypto: scalp every cycle ─────────────────────────────────────────
+        if crypto:
+            logger.info(f"[agent] Crypto scalp cycle ({len(crypto)} tickers)")
+            for ticker in crypto:
+                if not self.running:
+                    return
+                analysis = await self.analyse(ticker, scalping=True)
+                if analysis:
+                    await self.execute(ticker, analysis)
+                await asyncio.sleep(1)
+
+        # ── Stocks: analyse every 5th cycle to avoid API overuse ─────────────
+        if stocks:
+            self._stock_cycle += 1
+            stock_skip = 5
+            if self._stock_cycle >= stock_skip:
+                self._stock_cycle = 0
+                logger.info(f"[agent] Stock cycle ({len(stocks)} tickers)")
+                for ticker in stocks:
+                    if not self.running:
+                        return
+                    analysis = await self.analyse(ticker)
+                    if analysis:
+                        await self.execute(ticker, analysis)
+                    await asyncio.sleep(2)
 
         # Portfolio snapshot
         account = self.broker.get_account()
@@ -348,10 +450,10 @@ sizing    : small=25%, medium=50%, large=100% of max position size — scale up 
                           "timestamp": datetime.utcnow().isoformat()}})
         while self.running:
             try:
-                interval = int(db.get_setting("trading_interval") or 5)
+                # Use crypto_interval (default 1 min) as the base loop speed
+                interval = int(db.get_setting("crypto_interval") or 1)
                 await self.run_cycle()
                 logger.info(f"[agent] Cycle done. Sleeping {interval}m …")
-                # Sleep in 10-second slices so stop() takes effect promptly
                 for _ in range(interval * 6):
                     if not self.running:
                         break

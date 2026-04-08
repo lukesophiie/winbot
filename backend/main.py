@@ -592,15 +592,16 @@ async def get_trader_detail(name: str):
         try:
             price = fetch_current_price(ticker)
         except Exception:
-            price = pos["avg_price"]
-        live_value = pos["qty"] * (price if price > 0 else pos["avg_price"])
+            price = 0.0
+        display_price = price if price > 0 else pos["avg_price"]
+        live_value = pos["qty"] * display_price
         pnl_pos = (
-            (price - pos["avg_price"]) * pos["qty"] if pos["side"] == "long"
-            else (pos["avg_price"] - price) * pos["qty"]
+            (display_price - pos["avg_price"]) * pos["qty"] if pos["side"] == "long"
+            else (pos["avg_price"] - display_price) * pos["qty"]
         )
         positions_with_prices[ticker] = {
             **pos,
-            "current_price": price,
+            "current_price": display_price,
             "live_value": round(live_value, 2),
             "unrealized_pnl": round(pnl_pos, 2),
         }
@@ -610,7 +611,7 @@ async def get_trader_detail(name: str):
     pnl = portfolio_value - allocation
     pnl_pct = (pnl / allocation * 100) if allocation > 0 else 0.0
     all_trades = db.get_trader_trades(name, limit=10000)
-    trade_pnls = [tr["pnl"] for tr in all_trades if tr.get("pnl")]
+    trade_pnls = [tr["pnl"] for tr in all_trades if tr.get("pnl") is not None]
     winning = [p for p in trade_pnls if p > 0]
     return {
         **t,
@@ -676,6 +677,25 @@ async def stop_trader(name: str):
     db.set_trader_active(name, False)
     logger.info(f"Trader {name} stopped via API")
     return {"status": "stopped"}
+
+
+@app.post("/api/traders/reset-all")
+async def reset_all_traders():
+    """Reset all traders to their starting allocation — clears corrupted data."""
+    for name, ta in list(_trader_agents.items()):
+        ta.stop()
+        if name in _trader_tasks:
+            _trader_tasks[name].cancel()
+            try:
+                await _trader_tasks[name]
+            except (asyncio.CancelledError, Exception):
+                pass
+            del _trader_tasks[name]
+        del _trader_agents[name]
+    for t in db.get_traders():
+        db.reset_trader(t["name"])
+    logger.info("All traders reset")
+    return {"status": "all_reset"}
 
 
 @app.post("/api/traders/{name}/reset")

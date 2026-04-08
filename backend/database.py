@@ -520,10 +520,10 @@ def trader_virtual_cover(name: str, ticker: str, qty: float, price: float, pnl: 
     with _lock:
         conn = get_connection()
         # We already have the short proceeds in cash from the SHORT operation.
-        # Now we pay back the buyback cost. Net cash change = pnl.
+        # Subtract the buyback cost — the net effect on cash is pnl.
         conn.execute(
-            "UPDATE traders SET cash = cash + ? WHERE name = ?",
-            (pnl, name),
+            "UPDATE traders SET cash = cash - ? WHERE name = ?",
+            (cost, name),
         )
         conn.execute(
             "DELETE FROM trader_positions WHERE trader_name = ? AND ticker = ?",

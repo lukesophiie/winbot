@@ -259,6 +259,22 @@ export default function Traders({ toast }) {
     }
   }
 
+  const handleResetAll = async () => {
+    if (!window.confirm('Reset ALL traders? This clears all trades, positions and resets each to $10,000.')) return
+    setActionLoading('reset-all')
+    try {
+      await axios.post('/api/traders/reset-all')
+      toast('All traders reset to $10,000', 'success')
+      await fetchTraders()
+      setSelected(null)
+      setDetail(null)
+    } catch (e) {
+      toast(e.response?.data?.detail || 'Reset failed', 'error')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
   const handleRunAll = async () => {
     setActionLoading('all')
     const idle = traders.filter((t) => !t.is_running)
@@ -297,14 +313,25 @@ export default function Traders({ toast }) {
             <p className="text-sm text-slate-400">5 AI traders competing with $10,000 each</p>
           </div>
         </div>
-        <button
-          onClick={handleRunAll}
-          disabled={actionLoading === 'all'}
-          className="btn-primary text-sm"
-        >
-          <PlayCircle size={16} />
-          {actionLoading === 'all' ? 'Starting…' : 'Run All Traders'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleResetAll}
+            disabled={!!actionLoading}
+            className="btn-ghost text-sm"
+            title="Reset all traders to $10,000 starting balance"
+          >
+            <RotateCcw size={15} />
+            {actionLoading === 'reset-all' ? 'Resetting…' : 'Reset All'}
+          </button>
+          <button
+            onClick={handleRunAll}
+            disabled={!!actionLoading}
+            className="btn-primary text-sm"
+          >
+            <PlayCircle size={16} />
+            {actionLoading === 'all' ? 'Starting…' : 'Run All Traders'}
+          </button>
+        </div>
       </div>
 
       {/* ── Leaderboard ── */}

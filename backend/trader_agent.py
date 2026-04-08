@@ -13,7 +13,7 @@ from indicators import calculate_all_indicators
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-3-5-sonnet-20241022"
+MODEL = "claude-sonnet-4-5"
 
 CRYPTO_TICKERS = set()  # populated dynamically by checking "/" in ticker
 
